@@ -1,23 +1,22 @@
 # Course Registration REST API
 
-> Flask REST API for managing students, courses, and enrollments with normalized relational modeling, transactional registration workflows, integrity constraints, search, pagination, and automated tests.
+> Flask REST API for managing students, courses, and enrollments with normalized relational modeling, database constraints, duplicate-enrollment prevention, capacity validation, and basic API tests.
 
 [![Portfolio](https://img.shields.io/badge/Portfolio-perpsakach.github.io-d7ff5f?style=flat-square&labelColor=11151a)](https://perpsakach.github.io/)
 ![Flask](https://img.shields.io/badge/Flask-REST%20API-111827?style=flat-square)
-![SQL](https://img.shields.io/badge/SQL-Relational%20Modeling-2563eb?style=flat-square)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-2563eb?style=flat-square)
 ![Testing](https://img.shields.io/badge/Testing-pytest-0f766e?style=flat-square)
+![Status](https://img.shields.io/badge/Status-Portfolio%20Reconstruction-6b7280?style=flat-square)
 
 ## Overview
 
-This project models course registration as a relational backend problem rather than storing enrollment state inside ad hoc lists or comma-separated fields.
-
-The central many-to-many relationship is resolved through an `Enrollment` entity:
+This project models course registration as a relational backend problem. Students and courses are connected through an `Enrollment` entity rather than embedding registration data inside either parent record.
 
 ```text
 Student 1 ---- * Enrollment * ---- 1 Course
 ```
 
-That design allows registration to carry its own lifecycle data such as status and timestamps.
+The current public implementation is intentionally compact. It demonstrates the core data model, student/course creation and listing, enrollment creation/reactivation, duplicate prevention, capacity checks, and testable Flask endpoints.
 
 ## Domain model
 
@@ -32,14 +31,19 @@ erDiagram
         string first_name
         string last_name
         string email UK
+        datetime created_at
+        datetime updated_at
     }
 
     COURSE {
         int id PK
         string code UK
         string title
+        string description
         int credits
         int capacity
+        datetime created_at
+        datetime updated_at
     }
 
     ENROLLMENT {
@@ -54,123 +58,96 @@ erDiagram
 
 Database-level integrity includes:
 
-```text
-UNIQUE(student_id, course_id)
-```
+- unique `student_number`
+- unique student `email`
+- unique course `code`
+- positive course `credits`
+- positive course `capacity`
+- unique `(student_id, course_id)` enrollment relationship
+- enrollment status constrained to `active` or `dropped`
+- foreign keys from enrollment to student and course
 
-so duplicate relationships cannot be created even if application code fails.
+## Current public endpoints
 
-## Layered architecture
-
-```mermaid
-flowchart LR
-    C[API Client] --> R[Flask Routes]
-    R --> V[Validation]
-    V --> S[Service Layer]
-    S --> P[Repository Layer]
-    P --> O[SQLAlchemy]
-    O --> DB[(Relational Database)]
-```
-
-### Responsibilities
-
-- **Routes** — HTTP requests, JSON, query parameters, status codes
-- **Validation** — field format and input constraints
-- **Services** — business rules and transaction workflows
-- **Repositories** — database queries
-- **Models** — relational structure and database constraints
-
-## Core endpoints
+The repository currently implements:
 
 ```text
-GET/POST          /api/students
-GET/PATCH/DELETE  /api/students/<id>
-GET               /api/students/<id>/courses
+GET  /api/health
 
-GET/POST          /api/courses
-GET/PATCH/DELETE  /api/courses/<id>
-GET               /api/courses/<id>/students
+POST /api/students
+GET  /api/students
 
-GET/POST          /api/enrollments
-GET/DELETE        /api/enrollments/<id>
+POST /api/courses
+GET  /api/courses
+
+POST /api/enrollments
 ```
 
-## Registration workflow
+### Student creation
+
+`POST /api/students` validates required fields and returns conflict responses for duplicate student numbers or email addresses.
+
+### Course creation
+
+`POST /api/courses` validates course code/title plus positive numeric `credits` and `capacity` values. Course codes are normalized to uppercase.
+
+### Enrollment creation
+
+`POST /api/enrollments`:
 
 ```mermaid
 flowchart TD
-    A[POST /api/enrollments] --> B[Validate request]
-    B --> C{Student exists?}
+    A[POST /api/enrollments] --> B[Parse student_id and course_id]
+    B --> C{Student and course exist?}
     C -- No --> C1[404]
-    C -- Yes --> D{Course exists?}
-    D -- No --> D1[404]
-    D -- Yes --> E{Active enrollment exists?}
-    E -- Yes --> E1[409 duplicate]
-    E -- No --> F[Count active seats]
-    F --> G{At capacity?}
-    G -- Yes --> G1[409 course_full]
-    G -- No --> H[Create or reactivate enrollment]
-    H --> I[COMMIT]
-    I --> J[201 Created]
+    C -- Yes --> D{Existing active enrollment?}
+    D -- Yes --> D1[409 already_enrolled]
+    D -- No --> E[Count active course enrollments]
+    E --> F{At capacity?}
+    F -- Yes --> F1[409 course_full]
+    F -- No --> G{Existing dropped relationship?}
+    G -- Yes --> H[Reactivate enrollment]
+    G -- No --> I[Create enrollment]
+    H --> J[Commit]
+    I --> J
+    J --> K[201 Created]
 ```
 
-## HTTP semantics
+The capacity check is useful for demonstrating business-rule enforcement, but it is not concurrency-safe for a high-volume production registration system because it uses a count-then-insert pattern without row locking or serializable seat allocation.
 
-| Situation | Status |
-|---|---:|
-| Successful read/update | 200 |
-| Resource created | 201 |
-| Resource deleted | 204 |
-| Invalid request field | 400 |
-| Resource not found | 404 |
-| Duplicate/full/conflicting state | 409 |
+## Current architecture
 
-Using `409 Conflict` for a full course is intentional: the request may be structurally valid, but it conflicts with the current resource state.
+The present public implementation is deliberately small:
 
-## Integrity and transactions
-
-Each modifying workflow follows the pattern:
-
-```text
-BEGIN
-  validate
-  query
-  enforce business rules
-  modify
-  flush
-COMMIT
+```mermaid
+flowchart LR
+    C[API Client] --> F[Flask Application]
+    F --> V[Inline Validation / Business Rules]
+    V --> S[SQLAlchemy Session]
+    S --> DB[(Relational Database)]
 ```
 
-and rolls back on failure.
+The code currently keeps route handling, validation, and most business rules in `app/__init__.py`; the relational model is defined in `app/models.py`, and database/session configuration is separated into `app/db.py`.
 
-Application checks improve error messages, while database unique/foreign-key constraints remain the authoritative integrity layer.
+This is **not currently a full route/service/repository architecture**. That broader architecture remains a reasonable future extension, but the README does not present it as already implemented.
 
-## Capacity logic
+## Tests currently included
 
-The API prevents:
+The repository includes pytest coverage for:
 
-- enrolling beyond tracked capacity;
-- duplicate active registration;
-- reducing course capacity below current active enrollment.
+- health endpoint response
+- creating a student
+- creating a course
+- creating an enrollment
+- verifying an enrollment is returned as `active`
 
-A high-concurrency production implementation would add stronger seat-allocation concurrency control such as row locking or serializable transactions.
-
-## Search and pagination
-
-Examples:
-
-```text
-GET /api/students?search=amina&limit=25&offset=0
-GET /api/courses?search=database
-GET /api/enrollments?status=active&course_id=3
-```
+The test suite is present in the repository. This README does not claim that the suite has been executed successfully in every environment.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 flask --app run.py init-db
-flask --app run.py seed-db
 flask --app run.py run --debug
 ```
 
@@ -180,37 +157,47 @@ Run tests:
 pytest -q
 ```
 
-## What this project demonstrates
+There is currently **no `seed-db` CLI command** in the public implementation.
 
-- Flask backend engineering
-- REST API design
-- SQL / relational normalization
-- many-to-many relationships
-- transactions and constraints
-- validation and structured errors
-- CRUD workflows
-- search and pagination
-- automated testing
-- separation of concerns
+## Current implementation limits
 
-## Production extensions
+The public repository does **not currently implement**:
 
-A larger university system would add:
+- PATCH/DELETE student endpoints
+- PATCH/DELETE course endpoints
+- GET/DELETE enrollment-by-id endpoints
+- student-to-course or course-to-student lookup endpoints
+- search
+- pagination
+- authentication or authorization
+- semester/section modeling
+- prerequisite rules
+- waitlists
+- registration windows
+- schedule-conflict detection
+- concurrency-safe seat allocation
 
-- authentication and role-based authorization;
-- semesters and course sections;
-- prerequisites;
-- waitlists;
-- schedule-conflict detection;
-- registration windows;
-- migrations and OpenAPI documentation;
-- concurrency-safe seat allocation.
+Those are documented as future extensions rather than current capabilities.
+
+## What this project demonstrates today
+
+- Flask REST endpoint development
+- SQLAlchemy 2.x relational modeling
+- many-to-many relationship resolution through an association entity
+- uniqueness and check constraints
+- validation and structured HTTP errors
+- duplicate registration prevention
+- basic capacity enforcement
+- reusable database/session configuration
+- pytest-based API testing
 
 ## Provenance
 
-The historical project is recovered at the **Python + Flask + SQL + student/course/registration + CRUD + REST-style architecture** level. Exact historical endpoints, database engine, and source bytes are not currently available.
+The historical project is recovered only at a broad level: **Python + Flask + SQL + student/course/registration + CRUD/REST-style coursework**. I did not find an earlier course artifact in the currently available files that proves the exact historical endpoints, schema, database engine, or source implementation.
 
-See [`PROVENANCE.md`](PROVENANCE.md) for the recovered/reconstructed/enhanced breakdown.
+The code in this repository is therefore explicitly treated as a **reconstruction**, with current implemented behavior documented separately from future enhancements.
+
+See [`PROVENANCE.md`](PROVENANCE.md) and [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
 
 ## Portfolio
 
