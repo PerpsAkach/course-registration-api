@@ -41,7 +41,12 @@ def enforce_section_capacity(session: Session, _flush_context, _instances) -> No
     deltas: dict[int, int] = defaultdict(int)
 
     for obj in session.new:
-        if isinstance(obj, SectionEnrollment) and obj.status == "active" and obj.section_id is not None:
+        if not isinstance(obj, SectionEnrollment) or obj.section_id is None:
+            continue
+        # SQLAlchemy column defaults are populated during flush, so a newly
+        # constructed enrollment can still expose ``status is None`` here even
+        # though its persisted default is ``active``.
+        if (obj.status or "active") == "active":
             deltas[obj.section_id] += 1
 
     for obj in session.dirty:
