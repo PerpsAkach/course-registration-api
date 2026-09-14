@@ -1,6 +1,6 @@
 # Course Registration REST API
 
-> Flask + SQLAlchemy registration backend with academic terms, course sections, prerequisites, schedule validation, waitlists, authentication, role-based authorization, migrations, PostgreSQL support, transactional capacity protection, OpenAPI documentation, and automated CI.
+> Flask + SQLAlchemy registration backend with academic terms, course sections, prerequisites, schedule validation, waitlists, authentication, RBAC, migrations, PostgreSQL support, transactional seat protection, audit logging, rate limiting, OpenAPI documentation, and automated CI.
 
 [![CI](https://github.com/PerpsAkach/course-registration-api/actions/workflows/ci.yml/badge.svg)](https://github.com/PerpsAkach/course-registration-api/actions/workflows/ci.yml)
 [![Portfolio](https://img.shields.io/badge/Portfolio-perpsakach.github.io-d7ff5f?style=flat-square&labelColor=11151a)](https://perpsakach.github.io/)
@@ -11,19 +11,17 @@
 
 ## Overview
 
-This repository started as a portfolio reconstruction of a course-registration/database-systems project and has since been deliberately enhanced into a substantially richer backend system.
+This repository began as a portfolio reconstruction of a course-registration/database-systems project and has since been deliberately enhanced into a substantially richer backend system.
 
-The current implementation models the real registration domain rather than only a student-to-course join table. It includes students, courses, academic terms, sections, meeting schedules, prerequisites, course completions, section registrations, waitlists, authentication, role-based access control, schema migrations, PostgreSQL runtime support, and an OpenAPI contract.
+The current implementation models students, courses, academic terms, sections, meeting schedules, prerequisites, course completions, section registrations, waitlists, authentication, role-based access control, schema migrations, PostgreSQL runtime support, structured audit events, defensive request throttling, and an OpenAPI contract.
 
-The public code is therefore best described as:
+The public code is best described as:
 
 **Recovered project concept → reconstructed core → enhanced portfolio backend**
 
-The provenance boundary remains explicit: the richer features documented below are current portfolio enhancements, not claims about the exact historical coursework implementation.
+The provenance boundary remains explicit: the richer features documented below are modern portfolio enhancements, not claims about the exact historical coursework implementation.
 
-## What is implemented
-
-The current API supports:
+## Current capabilities
 
 - student and course CRUD
 - search and pagination
@@ -35,14 +33,17 @@ The current API supports:
 - duplicate-course prevention within a term
 - schedule-conflict detection
 - section-level capacity enforcement
-- transactional final-seat protection using PostgreSQL row locking
+- PostgreSQL `SELECT ... FOR UPDATE` protection for final-seat allocation
 - drop/reactivation behavior
-- FIFO waitlists
-- automatic promotion of the next eligible waitlisted student when a seat opens
+- FIFO waitlists and automatic promotion
 - bearer-token authentication
-- `student`, `registrar`, and `admin` roles
+- `student`, `registrar`, and `admin` RBAC
 - student self-service authorization boundaries
 - admin-managed user creation
+- structured audit logging for mutating API requests
+- admin-only audit-event retrieval
+- request IDs returned through `X-Request-ID`
+- configurable API rate limiting with stricter login/bootstrap limits
 - Alembic migrations
 - PostgreSQL driver/runtime support
 - OpenAPI 3.1 documentation in `docs/openapi.yaml`
@@ -54,10 +55,14 @@ The current API supports:
 flowchart LR
     Client[API Client] --> Runtime[Secure Flask Application]
     Runtime --> Auth[Authentication + RBAC]
+    Runtime --> Limits[Rate Limiting]
+    Runtime --> Audit[Audit Logging]
     Runtime --> Core[Core Registration Routes]
     Runtime --> Wait[Waitlist Workflow]
     Runtime --> Capacity[Transactional Capacity Guard]
+
     Auth --> DB[(SQLAlchemy / Relational DB)]
+    Audit --> DB
     Core --> DB
     Wait --> DB
     Capacity --> DB
@@ -69,102 +74,25 @@ flowchart LR
     Rules --> S[Schedule Conflicts]
 ```
 
-Runtime composition is handled by `app/secure.py`. It builds the core Flask application, registers waitlist behavior, enables authentication/authorization, and activates the transactional capacity guard. The executable entry point in `run.py` uses this secure application factory.
+Runtime composition is handled by `app/secure.py`. The executable entry point in `run.py` uses this secure application factory.
 
 ### Main code organization
 
 ```text
 app/
-├── __init__.py   # core REST endpoints and registration rules
-├── auth.py       # authentication, user accounts, RBAC
-├── capacity.py   # transactional section-capacity guard
-├── db.py         # SQLAlchemy engine/session configuration
-├── models.py     # academic/registration relational model
-├── secure.py     # production-oriented application composition
-└── waitlist.py   # waitlist lifecycle and automatic promotion
+├── __init__.py    # core REST endpoints and registration rules
+├── audit.py       # structured request audit events
+├── auth.py        # authentication, user accounts, RBAC
+├── capacity.py    # transactional section-capacity guard
+├── db.py          # SQLAlchemy engine/session configuration
+├── models.py      # academic/registration relational model
+├── rate_limit.py  # request throttling
+├── secure.py      # production-oriented application composition
+└── waitlist.py    # waitlist lifecycle and automatic promotion
 
-migrations/       # Alembic migration environment and versions
-docs/openapi.yaml # OpenAPI 3.1 API contract
+migrations/        # Alembic migration environment and versions
+docs/openapi.yaml  # OpenAPI 3.1 API contract
 ```
-
-The project is not yet split into a full route/service/repository package hierarchy. That remains a possible architectural refinement, but the current separation already isolates database configuration, authentication, waitlisting, transactional capacity enforcement, application composition, migrations, and the central domain model.
-
-## Domain model
-
-```mermaid
-erDiagram
-    STUDENT ||--o{ SECTION_ENROLLMENT : registers
-    SECTION ||--o{ SECTION_ENROLLMENT : receives
-    STUDENT ||--o{ COURSE_COMPLETION : completes
-    COURSE ||--o{ COURSE_COMPLETION : records
-    COURSE ||--o{ SECTION : offered_as
-    ACADEMIC_TERM ||--o{ SECTION : contains
-    COURSE ||--o{ PREREQUISITE : requires
-    COURSE ||--o{ PREREQUISITE : prerequisite_course
-    STUDENT ||--o{ WAITLIST_ENTRY : joins
-    SECTION ||--o{ WAITLIST_ENTRY : queues
-    STUDENT ||--o| USER_ACCOUNT : authenticates_as
-
-    STUDENT {
-        int id PK
-        string student_number UK
-        string first_name
-        string last_name
-        string email UK
-    }
-
-    COURSE {
-        int id PK
-        string code UK
-        string title
-        int credits
-        int capacity
-    }
-
-    ACADEMIC_TERM {
-        int id PK
-        string name
-        int year
-        date starts_on
-        date ends_on
-        date registration_opens_on
-        date registration_closes_on
-    }
-
-    SECTION {
-        int id PK
-        int course_id FK
-        int term_id FK
-        string section_number
-        int capacity
-        string instructor
-        string meeting_days
-        time starts_at
-        time ends_at
-        string location
-    }
-
-    SECTION_ENROLLMENT {
-        int id PK
-        int student_id FK
-        int section_id FK
-        string status
-        datetime enrolled_at
-        datetime dropped_at
-    }
-
-    WAITLIST_ENTRY {
-        int id PK
-        int student_id FK
-        int section_id FK
-        string status
-        datetime joined_at
-        datetime promoted_at
-        datetime cancelled_at
-    }
-```
-
-The original course-level `Enrollment` model remains available as part of the reconstruction. The enhanced registration workflow uses `SectionEnrollment`, which is the more realistic unit for term-based registration.
 
 ## Registration decision flow
 
@@ -172,17 +100,17 @@ The original course-level `Enrollment` model remains available as part of the re
 flowchart TD
     A[Registration request] --> B{Registration window open?}
     B -- No --> X1[409 registration_closed]
-    B -- Yes --> C{Already active in this section?}
+    B -- Yes --> C{Already active in section?}
     C -- Yes --> X2[409 already_enrolled]
     C -- No --> D{Prerequisites complete?}
     D -- No --> X3[409 prerequisites_not_met]
-    D -- Yes --> E{Same course already registered this term?}
+    D -- Yes --> E{Same course already active this term?}
     E -- Yes --> X4[409 already_registered_for_course]
     E -- No --> F{Schedule conflict?}
     F -- Yes --> X5[409 schedule_conflict]
     F -- No --> G{Seat available?}
-    G -- Yes --> H[Create or reactivate section enrollment]
     G -- No --> X6[409 section_full]
+    G -- Yes --> H[Create or reactivate enrollment]
     H --> I[Transactional capacity guard]
     I --> J[201 Created]
 ```
@@ -191,27 +119,25 @@ When a section is full, an eligible student may join its waitlist. Dropping an a
 
 ### Final-seat concurrency protection
 
-The route-level capacity check provides a fast domain response, but production PostgreSQL deployments also activate `app/capacity.py`. Before an active section seat is committed, the guard locks the target `sections` row with `SELECT ... FOR UPDATE`, recounts active section enrollments inside the transaction, and rejects an over-capacity transaction with `409 section_full`.
+The route-level capacity check provides a fast domain response. The enhanced secure runtime also activates `app/capacity.py`.
 
-That row lock serializes competing registrations for the same section on PostgreSQL. SQLite remains useful for development and tests, but it does not provide PostgreSQL-equivalent row-level `FOR UPDATE` semantics, so production concurrency claims are scoped to databases that support the locking strategy.
+On PostgreSQL, active seat changes lock the target `sections` row with `SELECT ... FOR UPDATE`, recount active section enrollments inside the transaction, and reject an over-capacity transaction. This serializes competing registrations for the same section before the final seat is committed.
+
+SQLite remains useful for local development and tests, but it does not provide PostgreSQL-equivalent row-level `FOR UPDATE` behavior. Production concurrency claims are therefore scoped to databases that support the locking strategy.
 
 ## Authentication and authorization
 
 The secure runtime protects API routes by default.
 
-Roles:
-
 | Role | Intended access |
 |---|---|
 | `student` | Read catalog data and operate on the student's own registration/waitlist resources |
 | `registrar` | Manage operational registration and catalog resources |
-| `admin` | Registrar capabilities plus user/account administration |
+| `admin` | Registrar capabilities plus user/account administration and audit-log access |
 
 Authentication uses password hashing plus time-limited signed bearer tokens. The current token lifetime is eight hours.
 
 ### First-time bootstrap
-
-Create the first administrator once:
 
 ```bash
 curl -X POST http://127.0.0.1:5000/api/auth/bootstrap \
@@ -222,8 +148,6 @@ curl -X POST http://127.0.0.1:5000/api/auth/bootstrap \
     "password": "ChangeThisStrongPassword"
   }'
 ```
-
-The bootstrap endpoint refuses subsequent bootstrap attempts once an account exists.
 
 ### Login
 
@@ -242,13 +166,65 @@ Use the returned token as:
 -H "Authorization: Bearer <token>"
 ```
 
-For deployment, set a strong application secret instead of relying on the development fallback:
+Set a strong deployment secret:
 
 ```bash
 export APP_SECRET_KEY="replace-with-a-long-random-secret"
 ```
 
-## Endpoint matrix
+## Audit logging
+
+Mutating HTTP requests (`POST`, `PATCH`, `PUT`, `DELETE`) are recorded in `audit_events` with:
+
+- request ID
+- authenticated actor ID when available
+- HTTP method
+- request path
+- response status
+- timestamp
+
+The middleware intentionally does **not** persist request bodies or credentials.
+
+Admins can inspect recent events using:
+
+```text
+GET /api/audit-events?limit=100
+```
+
+Responses also include an `X-Request-ID` header for request tracing.
+
+## Rate limiting
+
+The secure runtime uses Flask-Limiter.
+
+Defaults:
+
+```text
+Global default: 300 requests/minute per remote address
+Login:          10 requests/minute
+Bootstrap:       5 requests/hour
+```
+
+These can be changed with:
+
+```text
+RATELIMIT_DEFAULT
+RATELIMIT_LOGIN
+RATELIMIT_BOOTSTRAP
+RATELIMIT_STORAGE_URI
+```
+
+The default `memory://` limiter backend is appropriate for development and tests. A multi-worker production deployment should configure a shared rate-limit storage backend.
+
+Rate-limit violations return:
+
+```json
+{"error": "rate_limit_exceeded"}
+```
+
+with HTTP `429`.
+
+## Endpoint groups
 
 ### Public / authentication
 
@@ -274,7 +250,7 @@ export APP_SECRET_KEY="replace-with-a-long-random-secret"
 | GET | `/api/courses/<course_id>/students` |
 | POST / GET | `/api/courses/<course_id>/prerequisites` |
 
-### Terms, sections, completions, and registration
+### Registration domain
 
 | Method | Endpoint |
 |---|---|
@@ -286,67 +262,51 @@ export APP_SECRET_KEY="replace-with-a-long-random-secret"
 | DELETE | `/api/section-enrollments/<enrollment_id>` |
 | POST / GET | `/api/waitlists` |
 | DELETE | `/api/waitlists/<entry_id>` |
+| GET | `/api/audit-events` |
 
 The reconstruction's course-level enrollment endpoints also remain available under `/api/enrollments`.
 
 The machine-readable API contract is maintained at [`docs/openapi.yaml`](docs/openapi.yaml).
 
-## Search and pagination
-
-Student and course collection endpoints support `q` search. Student/course/enrollment collection APIs also implement pagination where provided by the core routes, using `page` and `per_page` with defensive bounds.
-
-Example:
-
-```text
-GET /api/students?q=amina&page=1&per_page=25
-GET /api/courses?q=programming&page=1&per_page=25
-```
-
 ## Database integrity and migrations
 
-The relational model uses application validation plus SQL-level constraints including:
+The relational model uses application validation plus SQL-level constraints including unique identifiers, positive credits/capacities, unique course/term/section combinations, unique enrollment/waitlist relationships, controlled lifecycle states, prerequisite self-reference prevention, and foreign keys across the registration domain.
 
-- unique student number and email
-- unique course code
-- positive credits and capacity
-- unique course/term/section-number combinations
-- unique student/section enrollment relationships
-- unique student/section waitlist relationships
-- prerequisite self-reference prevention
-- controlled lifecycle states for enrollments and waitlist entries
-- foreign-key relationships across the registration domain
+Alembic manages schema evolution. The repository contains a frozen baseline migration and a subsequent audit-events migration. CI verifies:
 
-Alembic manages schema evolution. The repository includes a baseline migration for the current schema, and CI verifies `upgrade head → downgrade base → upgrade head` before running tests.
+```text
+alembic upgrade head
+alembic downgrade base
+alembic upgrade head
+```
+
+before running the test suite.
 
 The application defaults to SQLite for local use and supports PostgreSQL through `psycopg`. Common hosted `postgres://` URLs are normalized for SQLAlchemy/psycopg compatibility.
 
 ## Tests and CI
 
-The test suite now covers considerably more than the original reconstruction, including:
+Coverage includes:
 
-- health checks
 - student/course CRUD
 - search and pagination
-- enrollment creation, drop, and reactivation
-- duplicate and capacity errors
+- enroll/drop/reactivate behavior
 - academic terms and sections
-- prerequisites and completion records
+- prerequisites and completions
 - registration windows
 - schedule conflicts
-- section capacity
+- capacity errors
 - transactional capacity guard behavior
 - PostgreSQL `FOR UPDATE` lock generation
-- waitlist lifecycle
-- automatic waitlist promotion
-- authentication requirements
-- one-time admin bootstrap
-- login failures
-- admin/registrar/student role boundaries
+- waitlist lifecycle and automatic promotion
+- authentication and RBAC
 - student ownership restrictions
-- OpenAPI specification structure
-- Alembic migration upgrade/downgrade cycles in CI
+- structured audit logging and admin-only audit access
+- authentication rate limiting and JSON `429` responses
+- OpenAPI structure
+- Alembic migration upgrade/downgrade cycles
 
-GitHub Actions runs migration verification and the pytest suite on pushes and pull requests to `main`. The current capacity/migration test run is passing.
+GitHub Actions runs migration verification and pytest on pushes and pull requests to `main`.
 
 ## Quick start
 
@@ -358,29 +318,28 @@ alembic upgrade head
 flask --app run.py run --debug
 ```
 
-`flask --app run.py init-db` remains available for simple local reconstruction workflows, but Alembic is the preferred schema-management path for the enhanced backend.
-
 Run tests:
 
 ```bash
 python -m pytest -q
 ```
 
-SQLite is the default development database. For PostgreSQL, provide a SQLAlchemy-compatible connection string through `DATABASE_URL`, for example:
+SQLite is the default development database. For PostgreSQL:
 
 ```bash
 export DATABASE_URL="postgresql+psycopg://user:password@host:5432/course_registration"
 alembic upgrade head
 ```
 
-## Current production gaps
+`flask --app run.py init-db` remains available for simple local reconstruction workflows, but Alembic is the preferred schema-management path for the enhanced backend.
 
-This is now a strong portfolio backend, but it is not presented as a finished university production registration platform. Important remaining engineering work includes:
+## Remaining production gaps
 
-- a real PostgreSQL integration environment/load test with simultaneous registration workers
-- account password reset/recovery and explicit token revocation
-- rate limiting / abuse controls
-- structured audit logging
+This is a strong portfolio backend, but it is not presented as a finished university production registration platform. Remaining engineering work includes:
+
+- a real PostgreSQL multi-worker concurrency/load test
+- password reset/recovery and explicit token revocation
+- shared production rate-limit storage configuration
 - interactive Swagger UI or equivalent generated documentation surface
 - deeper service-layer extraction from `app/__init__.py`
 - production observability / metrics
@@ -396,7 +355,7 @@ Accordingly:
 
 - **RECOVERED:** broad project concept and academic context
 - **RECONSTRUCTED:** initial student/course/enrollment Flask API
-- **ENHANCED:** CRUD expansion, terms, sections, prerequisites, registration rules, completions, waitlists, automatic promotion, authentication, RBAC, migrations, PostgreSQL support, transactional capacity protection, OpenAPI documentation, expanded tests, and CI
+- **ENHANCED:** CRUD expansion, terms, sections, prerequisites, registration rules, completions, waitlists, automatic promotion, authentication, RBAC, migrations, PostgreSQL support, transactional capacity protection, audit logging, rate limiting, OpenAPI documentation, expanded tests, and CI
 
 See [`PROVENANCE.md`](PROVENANCE.md) and [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the explicit boundary.
 
