@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from flask import Flask, jsonify, request
 from sqlalchemy import func, or_, select
 
 from .db import Base, configure_database, get_engine, new_session
-from .models import Course, Enrollment, Student
+from .models import AcademicTerm, Course, Enrollment, Prerequisite, Section, Student
 
 
 def _student_json(student: Student) -> dict:
@@ -31,6 +31,33 @@ def _course_json(course: Course) -> dict:
     }
 
 
+def _term_json(term: AcademicTerm) -> dict:
+    return {
+        "id": term.id,
+        "name": term.name,
+        "year": term.year,
+        "starts_on": term.starts_on.isoformat(),
+        "ends_on": term.ends_on.isoformat(),
+        "registration_opens_on": term.registration_opens_on.isoformat(),
+        "registration_closes_on": term.registration_closes_on.isoformat(),
+    }
+
+
+def _section_json(section: Section) -> dict:
+    return {
+        "id": section.id,
+        "course_id": section.course_id,
+        "term_id": section.term_id,
+        "section_number": section.section_number,
+        "instructor": section.instructor,
+        "capacity": section.capacity,
+        "meeting_days": section.meeting_days,
+        "starts_at": section.starts_at.isoformat(timespec="minutes") if section.starts_at else None,
+        "ends_at": section.ends_at.isoformat(timespec="minutes") if section.ends_at else None,
+        "location": section.location,
+    }
+
+
 def _enrollment_json(enrollment: Enrollment) -> dict:
     return {
         "id": enrollment.id,
@@ -49,6 +76,20 @@ def _pagination() -> tuple[int, int]:
     except ValueError:
         page, per_page = 1, 25
     return page, per_page
+
+
+def _parse_date(value: object) -> date:
+    if not isinstance(value, str):
+        raise ValueError("date must be ISO formatted")
+    return date.fromisoformat(value)
+
+
+def _parse_time(value: object) -> time | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("time must be HH:MM")
+    return time.fromisoformat(value)
 
 
 def create_app(database_url: str | None = None) -> Flask:
@@ -102,12 +143,7 @@ def create_app(database_url: str | None = None) -> Flask:
         with new_session() as session:
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
             rows = list(session.scalars(query.offset((page - 1) * per_page).limit(per_page)))
-            return jsonify({
-                "items": [_student_json(s) for s in rows],
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-            })
+            return jsonify({"items": [_student_json(s) for s in rows], "page": page, "per_page": per_page, "total": total})
 
     @app.get("/api/students/<int:student_id>")
     def get_student(student_id: int):
@@ -133,10 +169,7 @@ def create_app(database_url: str | None = None) -> Flask:
                 value = str(data["student_number"]).strip()
                 if not value:
                     return jsonify({"error": "validation_error"}), 400
-                duplicate = session.scalar(select(Student).where(
-                    Student.student_number == value,
-                    Student.id != student_id,
-                ))
+                duplicate = session.scalar(select(Student).where(Student.student_number == value, Student.id != student_id))
                 if duplicate:
                     return jsonify({"error": "student_number_exists"}), 409
                 student.student_number = value
@@ -145,10 +178,7 @@ def create_app(database_url: str | None = None) -> Flask:
                 value = str(data["email"]).strip().lower()
                 if not value:
                     return jsonify({"error": "validation_error"}), 400
-                duplicate = session.scalar(select(Student).where(
-                    Student.email == value,
-                    Student.id != student_id,
-                ))
+                duplicate = session.scalar(select(Student).where(Student.email == value, Student.id != student_id))
                 if duplicate:
                     return jsonify({"error": "email_exists"}), 409
                 student.email = value
@@ -192,13 +222,7 @@ def create_app(database_url: str | None = None) -> Flask:
             if session.scalar(select(Course).where(Course.code == code)):
                 return jsonify({"error": "course_code_exists"}), 409
 
-            course = Course(
-                code=code,
-                title=str(data["title"]).strip(),
-                description=data.get("description"),
-                credits=credits,
-                capacity=capacity,
-            )
+            course = Course(code=code, title=str(data["title"]).strip(), description=data.get("description"), credits=credits, capacity=capacity)
             session.add(course)
             session.commit()
             return jsonify(_course_json(course)), 201
@@ -216,12 +240,7 @@ def create_app(database_url: str | None = None) -> Flask:
         with new_session() as session:
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
             rows = list(session.scalars(query.offset((page - 1) * per_page).limit(per_page)))
-            return jsonify({
-                "items": [_course_json(c) for c in rows],
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-            })
+            return jsonify({"items": [_course_json(c) for c in rows], "page": page, "per_page": per_page, "total": total})
 
     @app.get("/api/courses/<int:course_id>")
     def get_course(course_id: int):
@@ -270,10 +289,7 @@ def create_app(database_url: str | None = None) -> Flask:
                     if value <= 0:
                         return jsonify({"error": "invalid_course_configuration"}), 400
                     if field == "capacity":
-                        active_count = session.scalar(select(func.count()).select_from(Enrollment).where(
-                            Enrollment.course_id == course_id,
-                            Enrollment.status == "active",
-                        )) or 0
+                        active_count = session.scalar(select(func.count()).select_from(Enrollment).where(Enrollment.course_id == course_id, Enrollment.status == "active")) or 0
                         if value < active_count:
                             return jsonify({"error": "capacity_below_active_enrollment"}), 409
                     setattr(course, field, value)
@@ -291,6 +307,154 @@ def create_app(database_url: str | None = None) -> Flask:
             session.commit()
             return "", 204
 
+    @app.post("/api/terms")
+    def create_term():
+        data = request.get_json(force=True)
+        try:
+            name = str(data["name"]).strip()
+            year = int(data["year"])
+            starts_on = _parse_date(data["starts_on"])
+            ends_on = _parse_date(data["ends_on"])
+            registration_opens_on = _parse_date(data["registration_opens_on"])
+            registration_closes_on = _parse_date(data["registration_closes_on"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "invalid_term"}), 400
+
+        if not name or year < 2000 or starts_on > ends_on or registration_opens_on > registration_closes_on:
+            return jsonify({"error": "invalid_term"}), 400
+
+        with new_session() as session:
+            duplicate = session.scalar(select(AcademicTerm).where(AcademicTerm.name == name, AcademicTerm.year == year))
+            if duplicate:
+                return jsonify({"error": "term_exists"}), 409
+            term = AcademicTerm(
+                name=name,
+                year=year,
+                starts_on=starts_on,
+                ends_on=ends_on,
+                registration_opens_on=registration_opens_on,
+                registration_closes_on=registration_closes_on,
+            )
+            session.add(term)
+            session.commit()
+            return jsonify(_term_json(term)), 201
+
+    @app.get("/api/terms")
+    def list_terms():
+        with new_session() as session:
+            rows = list(session.scalars(select(AcademicTerm).order_by(AcademicTerm.year, AcademicTerm.starts_on)))
+            return jsonify({"items": [_term_json(t) for t in rows]})
+
+    @app.post("/api/sections")
+    def create_section():
+        data = request.get_json(force=True)
+        try:
+            course_id = int(data["course_id"])
+            term_id = int(data["term_id"])
+            section_number = str(data["section_number"]).strip()
+            capacity = int(data.get("capacity", 30))
+            starts_at = _parse_time(data.get("starts_at"))
+            ends_at = _parse_time(data.get("ends_at"))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "invalid_section"}), 400
+
+        if not section_number or capacity <= 0 or ((starts_at is None) != (ends_at is None)) or (starts_at and ends_at and starts_at >= ends_at):
+            return jsonify({"error": "invalid_section"}), 400
+
+        with new_session() as session:
+            if session.get(Course, course_id) is None or session.get(AcademicTerm, term_id) is None:
+                return jsonify({"error": "course_or_term_not_found"}), 404
+            duplicate = session.scalar(select(Section).where(
+                Section.course_id == course_id,
+                Section.term_id == term_id,
+                Section.section_number == section_number,
+            ))
+            if duplicate:
+                return jsonify({"error": "section_exists"}), 409
+
+            section = Section(
+                course_id=course_id,
+                term_id=term_id,
+                section_number=section_number,
+                instructor=(str(data.get("instructor")).strip() if data.get("instructor") else None),
+                capacity=capacity,
+                meeting_days=(str(data.get("meeting_days")).strip().upper() if data.get("meeting_days") else None),
+                starts_at=starts_at,
+                ends_at=ends_at,
+                location=(str(data.get("location")).strip() if data.get("location") else None),
+            )
+            session.add(section)
+            session.commit()
+            return jsonify(_section_json(section)), 201
+
+    @app.get("/api/sections")
+    def list_sections():
+        query = select(Section)
+        course_id = request.args.get("course_id")
+        term_id = request.args.get("term_id")
+        try:
+            if course_id is not None:
+                query = query.where(Section.course_id == int(course_id))
+            if term_id is not None:
+                query = query.where(Section.term_id == int(term_id))
+        except ValueError:
+            return jsonify({"error": "invalid_section_filter"}), 400
+
+        with new_session() as session:
+            rows = list(session.scalars(query.order_by(Section.course_id, Section.term_id, Section.section_number)))
+            return jsonify({"items": [_section_json(s) for s in rows]})
+
+    @app.get("/api/sections/<int:section_id>")
+    def get_section(section_id: int):
+        with new_session() as session:
+            section = session.get(Section, section_id)
+            if section is None:
+                return jsonify({"error": "section_not_found"}), 404
+            return jsonify(_section_json(section))
+
+    @app.post("/api/courses/<int:course_id>/prerequisites")
+    def add_prerequisite(course_id: int):
+        data = request.get_json(force=True)
+        try:
+            required_course_id = int(data["required_course_id"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "invalid_prerequisite"}), 400
+
+        if course_id == required_course_id:
+            return jsonify({"error": "invalid_prerequisite"}), 400
+
+        with new_session() as session:
+            if session.get(Course, course_id) is None or session.get(Course, required_course_id) is None:
+                return jsonify({"error": "course_not_found"}), 404
+            duplicate = session.scalar(select(Prerequisite).where(
+                Prerequisite.course_id == course_id,
+                Prerequisite.required_course_id == required_course_id,
+            ))
+            if duplicate:
+                return jsonify({"error": "prerequisite_exists"}), 409
+            prerequisite = Prerequisite(course_id=course_id, required_course_id=required_course_id)
+            session.add(prerequisite)
+            session.commit()
+            return jsonify({"id": prerequisite.id, "course_id": course_id, "required_course_id": required_course_id}), 201
+
+    @app.get("/api/courses/<int:course_id>/prerequisites")
+    def list_prerequisites(course_id: int):
+        with new_session() as session:
+            if session.get(Course, course_id) is None:
+                return jsonify({"error": "course_not_found"}), 404
+            rows = list(session.execute(
+                select(Prerequisite, Course)
+                .join(Course, Course.id == Prerequisite.required_course_id)
+                .where(Prerequisite.course_id == course_id)
+                .order_by(Course.code)
+            ))
+            return jsonify({
+                "items": [
+                    {"id": prerequisite.id, "required_course": _course_json(required_course)}
+                    for prerequisite, required_course in rows
+                ]
+            })
+
     @app.post("/api/enrollments")
     def create_enrollment():
         data = request.get_json(force=True)
@@ -306,17 +470,11 @@ def create_app(database_url: str | None = None) -> Flask:
             if student is None or course is None:
                 return jsonify({"error": "student_or_course_not_found"}), 404
 
-            existing = session.scalar(select(Enrollment).where(
-                Enrollment.student_id == student_id,
-                Enrollment.course_id == course_id,
-            ))
+            existing = session.scalar(select(Enrollment).where(Enrollment.student_id == student_id, Enrollment.course_id == course_id))
             if existing and existing.status == "active":
                 return jsonify({"error": "already_enrolled"}), 409
 
-            active_count = session.scalar(select(func.count()).select_from(Enrollment).where(
-                Enrollment.course_id == course_id,
-                Enrollment.status == "active",
-            )) or 0
+            active_count = session.scalar(select(func.count()).select_from(Enrollment).where(Enrollment.course_id == course_id, Enrollment.status == "active")) or 0
             if active_count >= course.capacity:
                 return jsonify({"error": "course_full"}), 409
 
@@ -355,12 +513,7 @@ def create_app(database_url: str | None = None) -> Flask:
         with new_session() as session:
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
             rows = list(session.scalars(query.offset((page - 1) * per_page).limit(per_page)))
-            return jsonify({
-                "items": [_enrollment_json(e) for e in rows],
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-            })
+            return jsonify({"items": [_enrollment_json(e) for e in rows], "page": page, "per_page": per_page, "total": total})
 
     @app.get("/api/enrollments/<int:enrollment_id>")
     def get_enrollment(enrollment_id: int):
