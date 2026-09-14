@@ -87,10 +87,11 @@ def test_postgresql_serializes_competing_final_seat_commits():
     barrier = threading.Barrier(2)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        outcomes = sorted([
-            pool.submit(_attempt_registration, first_id, section_id, barrier).result(),
-            pool.submit(_attempt_registration, second_id, section_id, barrier).result(),
-        ])
+        futures = [
+            pool.submit(_attempt_registration, first_id, section_id, barrier),
+            pool.submit(_attempt_registration, second_id, section_id, barrier),
+        ]
+        outcomes = sorted(future.result(timeout=20) for future in futures)
 
     assert outcomes == ["capacity_rejected", "committed"]
 
