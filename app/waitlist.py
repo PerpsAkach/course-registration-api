@@ -126,6 +126,24 @@ def promote_next_eligible(session, section_id: int) -> WaitlistEntry | None:
     return None
 
 
+def init_waitlist(app) -> None:
+    app.register_blueprint(bp)
+
+    @app.after_request
+    def _promote_after_section_drop(response):
+        if request.method != "DELETE" or not request.path.startswith("/api/section-enrollments/") or response.status_code != 200:
+            return response
+        payload = response.get_json(silent=True) or {}
+        section_id = payload.get("section_id")
+        if section_id is None:
+            return response
+        with new_session() as session:
+            promoted = promote_next_eligible(session, int(section_id))
+            if promoted is not None:
+                session.commit()
+        return response
+
+
 @bp.post("/api/waitlists")
 def join_waitlist():
     data = request.get_json(force=True)
