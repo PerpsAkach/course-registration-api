@@ -25,6 +25,8 @@ class Student(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     enrollments: Mapped[list["Enrollment"]] = relationship(back_populates="student", cascade="all, delete-orphan")
+    section_enrollments: Mapped[list["SectionEnrollment"]] = relationship(back_populates="student", cascade="all, delete-orphan")
+    completions: Mapped[list["CourseCompletion"]] = relationship(back_populates="student", cascade="all, delete-orphan")
 
 
 class Course(Base):
@@ -92,6 +94,7 @@ class Section(Base):
 
     course: Mapped[Course] = relationship(back_populates="sections")
     term: Mapped[AcademicTerm] = relationship(back_populates="sections")
+    section_enrollments: Mapped[list["SectionEnrollment"]] = relationship(back_populates="section", cascade="all, delete-orphan")
 
 
 class Prerequisite(Base):
@@ -107,6 +110,40 @@ class Prerequisite(Base):
 
     course: Mapped[Course] = relationship(foreign_keys=[course_id], back_populates="prerequisites")
     required_course: Mapped[Course] = relationship(foreign_keys=[required_course_id])
+
+
+class CourseCompletion(Base):
+    __tablename__ = "course_completions"
+    __table_args__ = (
+        UniqueConstraint("student_id", "course_id", name="uq_student_course_completion"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    completed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    grade: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+
+    student: Mapped[Student] = relationship(back_populates="completions")
+    course: Mapped[Course] = relationship()
+
+
+class SectionEnrollment(Base):
+    __tablename__ = "section_enrollments"
+    __table_args__ = (
+        UniqueConstraint("student_id", "section_id", name="uq_student_section_enrollment"),
+        CheckConstraint("status IN ('active', 'dropped')", name="ck_section_enrollment_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    dropped_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    student: Mapped[Student] = relationship(back_populates="section_enrollments")
+    section: Mapped[Section] = relationship(back_populates="section_enrollments")
 
 
 class Enrollment(Base):
