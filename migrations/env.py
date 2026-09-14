@@ -9,6 +9,7 @@ from sqlalchemy import engine_from_config, pool
 from app.db import Base, normalize_database_url
 import app.models  # noqa: F401 - registers core ORM metadata
 import app.auth  # noqa: F401 - registers authentication ORM metadata
+import app.audit  # noqa: F401 - registers audit ORM metadata
 
 config = context.config
 if config.config_file_name is not None:
