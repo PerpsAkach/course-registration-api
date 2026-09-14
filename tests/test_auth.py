@@ -136,3 +136,47 @@ def test_invalid_login_is_rejected(client):
     })
     assert bad.status_code == 401
     assert bad.get_json()["error"] == "invalid_credentials"
+
+
+def test_logout_all_revokes_existing_bearer_token(client):
+    token = bootstrap(client)
+    assert client.get("/api/auth/me", headers=auth_header(token)).status_code == 200
+
+    revoked = client.post("/api/auth/logout-all", headers=auth_header(token))
+    assert revoked.status_code == 200
+    assert revoked.get_json()["status"] == "tokens_revoked"
+
+    assert client.get("/api/auth/me", headers=auth_header(token)).status_code == 401
+
+    relogin = client.post("/api/auth/login", json={
+        "username": "admin",
+        "password": "AdminPassword123!",
+    })
+    assert relogin.status_code == 200
+    replacement = relogin.get_json()["token"]
+    assert client.get("/api/auth/me", headers=auth_header(replacement)).status_code == 200
+
+
+def test_password_change_revokes_old_tokens_and_requires_new_password(client):
+    token = bootstrap(client)
+
+    changed = client.post("/api/auth/password", headers=auth_header(token), json={
+        "current_password": "AdminPassword123!",
+        "new_password": "ReplacementPassword456!",
+    })
+    assert changed.status_code == 200
+    assert changed.get_json()["tokens_revoked"] is True
+
+    assert client.get("/api/auth/me", headers=auth_header(token)).status_code == 401
+
+    old_login = client.post("/api/auth/login", json={
+        "username": "admin",
+        "password": "AdminPassword123!",
+    })
+    assert old_login.status_code == 401
+
+    new_login = client.post("/api/auth/login", json={
+        "username": "admin",
+        "password": "ReplacementPassword456!",
+    })
+    assert new_login.status_code == 200
