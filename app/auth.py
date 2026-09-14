@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 
-from flask import current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,6 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from .db import Base, new_session
 
 TOKEN_MAX_AGE_SECONDS = 8 * 60 * 60
+bp = Blueprint("auth", __name__)
 
 
 class UserAccount(Base):
@@ -44,11 +46,7 @@ def user_json(user: UserAccount) -> dict:
 
 
 def _secret_key() -> str:
-    return (
-        current_app.config.get("SECRET_KEY")
-        or os.getenv("APP_SECRET_KEY")
-        or "development-only-change-me"
-    )
+    return current_app.config["SECRET_KEY"]
 
 
 def _serializer() -> URLSafeTimedSerializer:
@@ -76,130 +74,209 @@ def authenticate_request() -> UserAccount | None:
         user = session.get(UserAccount, user_id)
         if user is None or not user.is_active:
             return None
-        # Detach the simple scalar state from the session before returning.
         session.expunge(user)
         return user
 
 
-def current_user() -> UserAccount | None:
-    return getattr(g, "current_user", None)
+def _student_owns_target(user: UserAccount) -> bool:
+    if user.student_id is None:
+        return False
 
+    path = request.path
+    method = request.method
 
-def require_authenticated() -> tuple[UserAccount | None, object | None]:
-    user = authenticate_request()
-    if user is None:
-        return None, (jsonify({"error": "authentication_required"}), 401)
-    g.current_user = user
-    return user, None
+    if method == "GET" and (
+        path == "/api/courses"
+        or path.startswith("/api/courses/")
+        or path == "/api/terms"
+        or path.startswith("/api/terms/")
+        or path == "/api/sections"
+        or path.startswith("/api/sections/")
+    ):
+        return True
 
+    student_match = re.fullmatch(r"/api/students/(\d+)(?:/(?:courses|completions))?", path)
+    if method == "GET" and student_match:
+        return int(student_match.group(1)) == user.student_id
 
-def register_auth_routes(bp) -> None:
-    @bp.post("/api/auth/bootstrap")
-    def bootstrap_admin():
-        data = request.get_json(force=True)
-        username = str(data.get("username", "")).strip().lower()
-        email = str(data.get("email", "")).strip().lower()
-        password = str(data.get("password", ""))
-        if not username or not email or len(password) < 10:
-            return jsonify({"error": "invalid_bootstrap_request"}), 400
+    if method == "GET" and path in {"/api/section-enrollments", "/api/waitlists"}:
+        try:
+            return int(request.args.get("student_id", "")) == user.student_id
+        except ValueError:
+            return False
 
+    if method == "POST" and path in {"/api/section-enrollments", "/api/waitlists"}:
+        data = request.get_json(silent=True) or {}
+        try:
+            return int(data.get("student_id")) == user.student_id
+        except (TypeError, ValueError):
+            return False
+
+    if method == "DELETE" and path.startswith("/api/section-enrollments/"):
+        from .models import SectionEnrollment
+
+        try:
+            enrollment_id = int(path.rsplit("/", 1)[1])
+        except ValueError:
+            return False
         with new_session() as session:
-            existing_count = session.scalar(select(func.count()).select_from(UserAccount)) or 0
-            if existing_count:
-                return jsonify({"error": "bootstrap_already_completed"}), 409
-            user = UserAccount(
-                username=username,
-                email=email,
-                password_hash=generate_password_hash(password),
-                role="admin",
-            )
-            session.add(user)
-            session.commit()
-            return jsonify({"user": user_json(user), "token": issue_token(user)}), 201
+            enrollment = session.get(SectionEnrollment, enrollment_id)
+            return enrollment is not None and enrollment.student_id == user.student_id
 
-    @bp.post("/api/auth/login")
-    def login():
-        data = request.get_json(force=True)
-        identifier = str(data.get("username", data.get("email", ""))).strip().lower()
-        password = str(data.get("password", ""))
-        if not identifier or not password:
+    if method == "DELETE" and path.startswith("/api/waitlists/"):
+        from .models import WaitlistEntry
+
+        try:
+            entry_id = int(path.rsplit("/", 1)[1])
+        except ValueError:
+            return False
+        with new_session() as session:
+            entry = session.get(WaitlistEntry, entry_id)
+            return entry is not None and entry.student_id == user.student_id
+
+    return False
+
+
+def init_auth(app, *, required: bool | None = None) -> None:
+    if required is None:
+        required = os.getenv("AUTH_REQUIRED", "1").lower() not in {"0", "false", "no"}
+    app.config["AUTH_REQUIRED"] = required
+    app.config.setdefault("SECRET_KEY", os.getenv("APP_SECRET_KEY", "development-only-change-me"))
+    app.register_blueprint(bp)
+
+    @app.before_request
+    def _authorize_request():
+        if not app.config["AUTH_REQUIRED"]:
+            return None
+        if not request.path.startswith("/api/"):
+            return None
+        if request.path in {"/api/health", "/api/auth/bootstrap", "/api/auth/login"}:
+            return None
+
+        user = authenticate_request()
+        if user is None:
+            return jsonify({"error": "authentication_required"}), 401
+        g.current_user = user
+
+        if request.path.startswith("/api/auth/"):
+            return None
+        if user.role in {"admin", "registrar"}:
+            return None
+        if user.role == "student" and _student_owns_target(user):
+            return None
+        return jsonify({"error": "forbidden"}), 403
+
+
+@bp.post("/api/auth/bootstrap")
+def bootstrap_admin():
+    data = request.get_json(force=True)
+    username = str(data.get("username", "")).strip().lower()
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    if not username or not email or len(password) < 10:
+        return jsonify({"error": "invalid_bootstrap_request"}), 400
+
+    with new_session() as session:
+        existing_count = session.scalar(select(func.count()).select_from(UserAccount)) or 0
+        if existing_count:
+            return jsonify({"error": "bootstrap_already_completed"}), 409
+        user = UserAccount(
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password),
+            role="admin",
+        )
+        session.add(user)
+        session.commit()
+        return jsonify({"user": user_json(user), "token": issue_token(user)}), 201
+
+
+@bp.post("/api/auth/login")
+def login():
+    data = request.get_json(force=True)
+    identifier = str(data.get("username", data.get("email", ""))).strip().lower()
+    password = str(data.get("password", ""))
+    if not identifier or not password:
+        return jsonify({"error": "invalid_credentials"}), 401
+
+    with new_session() as session:
+        user = session.scalar(select(UserAccount).where(
+            (UserAccount.username == identifier) | (UserAccount.email == identifier)
+        ))
+        if user is None or not user.is_active or not check_password_hash(user.password_hash, password):
             return jsonify({"error": "invalid_credentials"}), 401
+        return jsonify({
+            "token": issue_token(user),
+            "token_type": "Bearer",
+            "expires_in": TOKEN_MAX_AGE_SECONDS,
+            "user": user_json(user),
+        })
 
-        with new_session() as session:
-            user = session.scalar(select(UserAccount).where(
-                (UserAccount.username == identifier) | (UserAccount.email == identifier)
-            ))
-            if user is None or not user.is_active or not check_password_hash(user.password_hash, password):
-                return jsonify({"error": "invalid_credentials"}), 401
-            return jsonify({
-                "token": issue_token(user),
-                "token_type": "Bearer",
-                "expires_in": TOKEN_MAX_AGE_SECONDS,
-                "user": user_json(user),
-            })
 
-    @bp.get("/api/auth/me")
-    def me():
-        user, error = require_authenticated()
-        if error:
-            return error
-        return jsonify(user_json(user))
+@bp.get("/api/auth/me")
+def me():
+    user = getattr(g, "current_user", None)
+    if user is None:
+        return jsonify({"error": "authentication_required"}), 401
+    return jsonify(user_json(user))
 
-    @bp.post("/api/auth/users")
-    def create_user():
-        actor, error = require_authenticated()
-        if error:
-            return error
-        if actor.role != "admin":
-            return jsonify({"error": "forbidden"}), 403
 
-        data = request.get_json(force=True)
-        username = str(data.get("username", "")).strip().lower()
-        email = str(data.get("email", "")).strip().lower()
-        password = str(data.get("password", ""))
-        role = str(data.get("role", "")).strip().lower()
-        student_id = data.get("student_id")
-        if not username or not email or len(password) < 10 or role not in {"student", "registrar", "admin"}:
-            return jsonify({"error": "invalid_user"}), 400
+@bp.post("/api/auth/users")
+def create_user():
+    actor = getattr(g, "current_user", None)
+    if actor is None:
+        return jsonify({"error": "authentication_required"}), 401
+    if actor.role != "admin":
+        return jsonify({"error": "forbidden"}), 403
+
+    data = request.get_json(force=True)
+    username = str(data.get("username", "")).strip().lower()
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    role = str(data.get("role", "")).strip().lower()
+    student_id = data.get("student_id")
+    if not username or not email or len(password) < 10 or role not in {"student", "registrar", "admin"}:
+        return jsonify({"error": "invalid_user"}), 400
+    if role == "student":
+        try:
+            student_id = int(student_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "student_id_required"}), 400
+    else:
+        student_id = None
+
+    from .models import Student
+
+    with new_session() as session:
+        if session.scalar(select(UserAccount).where(UserAccount.username == username)):
+            return jsonify({"error": "username_exists"}), 409
+        if session.scalar(select(UserAccount).where(UserAccount.email == email)):
+            return jsonify({"error": "email_exists"}), 409
         if role == "student":
-            try:
-                student_id = int(student_id)
-            except (TypeError, ValueError):
-                return jsonify({"error": "student_id_required"}), 400
-        else:
-            student_id = None
+            if session.get(Student, student_id) is None:
+                return jsonify({"error": "student_not_found"}), 404
+            if session.scalar(select(UserAccount).where(UserAccount.student_id == student_id)):
+                return jsonify({"error": "student_account_exists"}), 409
 
-        from .models import Student
+        user = UserAccount(
+            username=username,
+            email=email,
+            password_hash=generate_password_hash(password),
+            role=role,
+            student_id=student_id,
+        )
+        session.add(user)
+        session.commit()
+        return jsonify(user_json(user)), 201
 
-        with new_session() as session:
-            if session.scalar(select(UserAccount).where(UserAccount.username == username)):
-                return jsonify({"error": "username_exists"}), 409
-            if session.scalar(select(UserAccount).where(UserAccount.email == email)):
-                return jsonify({"error": "email_exists"}), 409
-            if role == "student":
-                if session.get(Student, student_id) is None:
-                    return jsonify({"error": "student_not_found"}), 404
-                if session.scalar(select(UserAccount).where(UserAccount.student_id == student_id)):
-                    return jsonify({"error": "student_account_exists"}), 409
 
-            user = UserAccount(
-                username=username,
-                email=email,
-                password_hash=generate_password_hash(password),
-                role=role,
-                student_id=student_id,
-            )
-            session.add(user)
-            session.commit()
-            return jsonify(user_json(user)), 201
-
-    @bp.get("/api/auth/users")
-    def list_users():
-        actor, error = require_authenticated()
-        if error:
-            return error
-        if actor.role != "admin":
-            return jsonify({"error": "forbidden"}), 403
-        with new_session() as session:
-            rows = list(session.scalars(select(UserAccount).order_by(UserAccount.username)))
-            return jsonify({"items": [user_json(row) for row in rows]})
+@bp.get("/api/auth/users")
+def list_users():
+    actor = getattr(g, "current_user", None)
+    if actor is None:
+        return jsonify({"error": "authentication_required"}), 401
+    if actor.role != "admin":
+        return jsonify({"error": "forbidden"}), 403
+    with new_session() as session:
+        rows = list(session.scalars(select(UserAccount).order_by(UserAccount.username)))
+        return jsonify({"items": [user_json(row) for row in rows]})
