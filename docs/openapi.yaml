@@ -1,0 +1,626 @@
+openapi: 3.1.0
+info:
+  title: Course Registration API
+  version: 1.0.0
+  description: |
+    Flask/SQLAlchemy course-registration backend with terms, sections,
+    prerequisites, section enrollment, waitlists, authentication and RBAC.
+servers:
+  - url: http://127.0.0.1:5000
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Authentication
+  - name: Students
+  - name: Courses
+  - name: Terms
+  - name: Sections
+  - name: Registration
+  - name: Waitlists
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      security: []
+      summary: Health check
+      responses:
+        '200':
+          description: Application is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+  /api/auth/bootstrap:
+    post:
+      tags: [Authentication]
+      security: []
+      summary: Create the first administrator account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+      responses:
+        '201': {description: Administrator created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      security: []
+      summary: Authenticate and receive a bearer token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: {type: string}
+                  token_type: {type: string, example: Bearer}
+                  expires_in: {type: integer, example: 28800}
+                  user: {$ref: '#/components/schemas/UserAccount'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Return the current authenticated account
+      responses:
+        '200':
+          description: Current account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserAccount'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/auth/users:
+    get:
+      tags: [Authentication]
+      summary: List user accounts
+      description: Admin only.
+      responses:
+        '200': {description: Account collection}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Authentication]
+      summary: Create a user account
+      description: Admin only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserAccount'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/students:
+    get:
+      tags: [Students]
+      summary: Search and list students
+      parameters:
+        - {$ref: '#/components/parameters/Search'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PerPage'}
+      responses:
+        '200': {description: Student collection}
+    post:
+      tags: [Students]
+      summary: Create a student
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StudentCreate'}
+      responses:
+        '201':
+          description: Student created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Student'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/students/{student_id}:
+    parameters:
+      - {$ref: '#/components/parameters/StudentId'}
+    get:
+      tags: [Students]
+      summary: Fetch one student
+      responses:
+        '200':
+          description: Student
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Student'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [Students]
+      summary: Update one student
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StudentUpdate'}
+      responses:
+        '200': {description: Updated student}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Students]
+      summary: Delete one student
+      responses:
+        '204': {description: Student deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/students/{student_id}/courses:
+    get:
+      tags: [Students]
+      summary: List active course-level enrollments for a student
+      parameters:
+        - {$ref: '#/components/parameters/StudentId'}
+      responses:
+        '200': {description: Courses}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/students/{student_id}/completions:
+    get:
+      tags: [Students]
+      summary: List completed courses for a student
+      parameters:
+        - {$ref: '#/components/parameters/StudentId'}
+      responses:
+        '200': {description: Completion records}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/courses:
+    get:
+      tags: [Courses]
+      summary: Search and list courses
+      parameters:
+        - {$ref: '#/components/parameters/Search'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PerPage'}
+      responses:
+        '200': {description: Course collection}
+    post:
+      tags: [Courses]
+      summary: Create a course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CourseCreate'}
+      responses:
+        '201':
+          description: Course created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Course'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/courses/{course_id}:
+    parameters:
+      - {$ref: '#/components/parameters/CourseId'}
+    get:
+      tags: [Courses]
+      summary: Fetch one course
+      responses:
+        '200': {description: Course}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      tags: [Courses]
+      summary: Update one course
+      responses:
+        '200': {description: Updated course}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Courses]
+      summary: Delete one course
+      responses:
+        '204': {description: Course deleted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/courses/{course_id}/students:
+    get:
+      tags: [Courses]
+      summary: List active course-level students
+      parameters:
+        - {$ref: '#/components/parameters/CourseId'}
+      responses:
+        '200': {description: Students}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/courses/{course_id}/prerequisites:
+    get:
+      tags: [Courses]
+      summary: List prerequisites for a course
+      parameters:
+        - {$ref: '#/components/parameters/CourseId'}
+      responses:
+        '200': {description: Prerequisites}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Courses]
+      summary: Add a prerequisite
+      parameters:
+        - {$ref: '#/components/parameters/CourseId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [required_course_id]
+              properties:
+                required_course_id: {type: integer}
+      responses:
+        '201': {description: Prerequisite created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/terms:
+    get:
+      tags: [Terms]
+      summary: List academic terms
+      responses:
+        '200': {description: Terms}
+    post:
+      tags: [Terms]
+      summary: Create an academic term
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TermCreate'}
+      responses:
+        '201': {description: Term created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/sections:
+    get:
+      tags: [Sections]
+      summary: List course sections
+      parameters:
+        - in: query
+          name: course_id
+          schema: {type: integer}
+        - in: query
+          name: term_id
+          schema: {type: integer}
+      responses:
+        '200': {description: Sections}
+    post:
+      tags: [Sections]
+      summary: Create a course section
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SectionCreate'}
+      responses:
+        '201': {description: Section created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/sections/{section_id}:
+    get:
+      tags: [Sections]
+      summary: Fetch one section
+      parameters:
+        - {$ref: '#/components/parameters/SectionId'}
+      responses:
+        '200': {description: Section}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/completions:
+    post:
+      tags: [Registration]
+      summary: Create or update a course-completion record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompletionRequest'}
+      responses:
+        '200': {description: Existing completion updated}
+        '201': {description: Completion recorded}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/section-enrollments:
+    get:
+      tags: [Registration]
+      summary: List section enrollments
+      parameters:
+        - in: query
+          name: student_id
+          schema: {type: integer}
+        - in: query
+          name: section_id
+          schema: {type: integer}
+        - in: query
+          name: status
+          schema: {type: string, enum: [active, dropped]}
+      responses:
+        '200': {description: Section enrollments}
+    post:
+      tags: [Registration]
+      summary: Register a student into a section
+      description: |
+        Enforces the registration window, prerequisites, duplicate-course rules,
+        schedule conflicts and section capacity. PostgreSQL deployments use a
+        transactional row lock around final-seat allocation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SectionEnrollmentRequest'}
+      responses:
+        '201':
+          description: Registration created or reactivated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SectionEnrollment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/section-enrollments/{enrollment_id}:
+    delete:
+      tags: [Registration]
+      summary: Drop a section enrollment
+      parameters:
+        - in: path
+          name: enrollment_id
+          required: true
+          schema: {type: integer}
+      responses:
+        '200': {description: Enrollment dropped}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/waitlists:
+    get:
+      tags: [Waitlists]
+      summary: List waitlist entries
+      parameters:
+        - in: query
+          name: student_id
+          schema: {type: integer}
+        - in: query
+          name: section_id
+          schema: {type: integer}
+        - in: query
+          name: status
+          schema: {type: string, enum: [waiting, promoted, cancelled]}
+      responses:
+        '200': {description: Waitlist entries}
+    post:
+      tags: [Waitlists]
+      summary: Join a full section waitlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WaitlistRequest'}
+      responses:
+        '201': {description: Waitlist entry created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/waitlists/{entry_id}:
+    delete:
+      tags: [Waitlists]
+      summary: Cancel a waiting entry
+      parameters:
+        - in: path
+          name: entry_id
+          required: true
+          schema: {type: integer}
+      responses:
+        '200': {description: Waitlist entry cancelled}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    Search:
+      in: query
+      name: q
+      schema: {type: string}
+    Page:
+      in: query
+      name: page
+      schema: {type: integer, minimum: 1, default: 1}
+    PerPage:
+      in: query
+      name: per_page
+      schema: {type: integer, minimum: 1, maximum: 100, default: 25}
+    StudentId:
+      in: path
+      name: student_id
+      required: true
+      schema: {type: integer}
+    CourseId:
+      in: path
+      name: course_id
+      required: true
+      schema: {type: integer}
+    SectionId:
+      in: path
+      name: section_id
+      required: true
+      schema: {type: integer}
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Authentication required or credentials invalid
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: Authenticated account is not authorized for the operation
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: Domain or state conflict
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+    BootstrapRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username: {type: string}
+        email: {type: string, format: email}
+        password: {type: string, minLength: 10}
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        username: {type: string}
+        email: {type: string, format: email}
+        password: {type: string}
+    UserAccount:
+      type: object
+      properties:
+        id: {type: integer}
+        username: {type: string}
+        email: {type: string, format: email}
+        role: {type: string, enum: [student, registrar, admin]}
+        student_id: {type: [integer, 'null']}
+        is_active: {type: boolean}
+        created_at: {type: string, format: date-time}
+    CreateUserRequest:
+      type: object
+      required: [username, email, password, role]
+      properties:
+        username: {type: string}
+        email: {type: string, format: email}
+        password: {type: string, minLength: 10}
+        role: {type: string, enum: [student, registrar, admin]}
+        student_id: {type: integer}
+    Student:
+      type: object
+      properties:
+        id: {type: integer}
+        student_number: {type: string}
+        first_name: {type: string}
+        last_name: {type: string}
+        email: {type: string, format: email}
+    StudentCreate:
+      type: object
+      required: [student_number, first_name, last_name, email]
+      properties:
+        student_number: {type: string}
+        first_name: {type: string}
+        last_name: {type: string}
+        email: {type: string, format: email}
+    StudentUpdate:
+      type: object
+      properties:
+        student_number: {type: string}
+        first_name: {type: string}
+        last_name: {type: string}
+        email: {type: string, format: email}
+    Course:
+      type: object
+      properties:
+        id: {type: integer}
+        code: {type: string}
+        title: {type: string}
+        description: {type: [string, 'null']}
+        credits: {type: integer, minimum: 1}
+        capacity: {type: integer, minimum: 1}
+    CourseCreate:
+      type: object
+      required: [code, title]
+      properties:
+        code: {type: string}
+        title: {type: string}
+        description: {type: string}
+        credits: {type: integer, minimum: 1, default: 3}
+        capacity: {type: integer, minimum: 1, default: 30}
+    TermCreate:
+      type: object
+      required: [name, year, starts_on, ends_on, registration_opens_on, registration_closes_on]
+      properties:
+        name: {type: string}
+        year: {type: integer, minimum: 2000}
+        starts_on: {type: string, format: date}
+        ends_on: {type: string, format: date}
+        registration_opens_on: {type: string, format: date}
+        registration_closes_on: {type: string, format: date}
+    SectionCreate:
+      type: object
+      required: [course_id, term_id, section_number]
+      properties:
+        course_id: {type: integer}
+        term_id: {type: integer}
+        section_number: {type: string}
+        instructor: {type: string}
+        capacity: {type: integer, minimum: 1, default: 30}
+        meeting_days: {type: string, example: MW}
+        starts_at: {type: string, example: '09:00'}
+        ends_at: {type: string, example: '10:15'}
+        location: {type: string}
+    CompletionRequest:
+      type: object
+      required: [student_id, course_id]
+      properties:
+        student_id: {type: integer}
+        course_id: {type: integer}
+        completed_on: {type: string, format: date}
+        grade: {type: string}
+    SectionEnrollmentRequest:
+      type: object
+      required: [student_id, section_id]
+      properties:
+        student_id: {type: integer}
+        section_id: {type: integer}
+        as_of: {type: string, format: date}
+    SectionEnrollment:
+      type: object
+      properties:
+        id: {type: integer}
+        student_id: {type: integer}
+        section_id: {type: integer}
+        status: {type: string, enum: [active, dropped]}
+        enrolled_at: {type: string, format: date-time}
+        dropped_at: {type: [string, 'null'], format: date-time}
+    WaitlistRequest:
+      type: object
+      required: [student_id, section_id]
+      properties:
+        student_id: {type: integer}
+        section_id: {type: integer}
+        as_of: {type: string, format: date}
