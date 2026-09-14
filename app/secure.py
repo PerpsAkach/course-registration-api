@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from flask import jsonify
+
 from . import create_app as create_core_app
 from . import capacity as _capacity  # noqa: F401 - registers SQLAlchemy capacity guard
 from .auth import init_auth
@@ -17,4 +19,9 @@ def create_app(database_url: str | None = None, *, auth_required: bool = True):
         init_waitlist(app)
     if "auth" not in app.blueprints:
         init_auth(app, required=auth_required)
+
+    @app.errorhandler(_capacity.SectionCapacityExceeded)
+    def _section_capacity_exceeded(exc):
+        return jsonify({"error": "section_full", "section_id": exc.section_id}), 409
+
     return app
