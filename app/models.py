@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timezone
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, Time, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -28,6 +28,37 @@ class Student(Base):
     section_enrollments: Mapped[list["SectionEnrollment"]] = relationship(back_populates="student", cascade="all, delete-orphan")
     completions: Mapped[list["CourseCompletion"]] = relationship(back_populates="student", cascade="all, delete-orphan")
     waitlist_entries: Mapped[list["WaitlistEntry"]] = relationship(back_populates="student", cascade="all, delete-orphan")
+    account: Mapped[Optional["UserAccount"]] = relationship(back_populates="student", uselist=False)
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+    __table_args__ = (
+        CheckConstraint("role IN ('student', 'registrar', 'admin')", name="ck_user_role"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="student", index=True)
+    student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("students.id", ondelete="SET NULL"), unique=True, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    student: Mapped[Optional[Student]] = relationship(back_populates="account")
+    tokens: Mapped[list["AuthToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user: Mapped[UserAccount] = relationship(back_populates="tokens")
 
 
 class Course(Base):
