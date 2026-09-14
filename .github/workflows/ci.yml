@@ -31,3 +31,6 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Build production container
+        run: docker build --tag course-registration-api:ci .
