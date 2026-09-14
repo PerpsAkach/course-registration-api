@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, g, jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func, select
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, mapped_column
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -30,6 +30,7 @@ class UserAccount(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -54,7 +55,11 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def issue_token(user: UserAccount) -> str:
-    return _serializer().dumps({"user_id": user.id, "role": user.role})
+    return _serializer().dumps({
+        "user_id": user.id,
+        "role": user.role,
+        "token_version": user.token_version,
+    })
 
 
 def authenticate_request() -> UserAccount | None:
@@ -67,12 +72,13 @@ def authenticate_request() -> UserAccount | None:
     try:
         payload = _serializer().loads(token, max_age=TOKEN_MAX_AGE_SECONDS)
         user_id = int(payload["user_id"])
+        token_version = int(payload["token_version"])
     except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
         return None
 
     with new_session() as session:
         user = session.get(UserAccount, user_id)
-        if user is None or not user.is_active:
+        if user is None or not user.is_active or user.token_version != token_version:
             return None
         session.expunge(user)
         return user
@@ -219,6 +225,45 @@ def me():
     if user is None:
         return jsonify({"error": "authentication_required"}), 401
     return jsonify(user_json(user))
+
+
+@bp.post("/api/auth/logout-all")
+def logout_all():
+    actor = getattr(g, "current_user", None)
+    if actor is None:
+        return jsonify({"error": "authentication_required"}), 401
+
+    with new_session() as session:
+        user = session.get(UserAccount, actor.id)
+        if user is None or not user.is_active:
+            return jsonify({"error": "authentication_required"}), 401
+        user.token_version += 1
+        session.commit()
+    return jsonify({"status": "tokens_revoked"})
+
+
+@bp.post("/api/auth/password")
+def change_password():
+    actor = getattr(g, "current_user", None)
+    if actor is None:
+        return jsonify({"error": "authentication_required"}), 401
+
+    data = request.get_json(force=True)
+    current_password = str(data.get("current_password", ""))
+    new_password = str(data.get("new_password", ""))
+    if len(new_password) < 10:
+        return jsonify({"error": "invalid_new_password"}), 400
+
+    with new_session() as session:
+        user = session.get(UserAccount, actor.id)
+        if user is None or not user.is_active or not check_password_hash(user.password_hash, current_password):
+            return jsonify({"error": "invalid_credentials"}), 401
+        if check_password_hash(user.password_hash, new_password):
+            return jsonify({"error": "password_unchanged"}), 409
+        user.password_hash = generate_password_hash(new_password)
+        user.token_version += 1
+        session.commit()
+    return jsonify({"status": "password_changed", "tokens_revoked": True})
 
 
 @bp.post("/api/auth/users")
