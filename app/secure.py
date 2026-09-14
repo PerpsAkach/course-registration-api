@@ -9,6 +9,7 @@ from . import capacity as _capacity  # noqa: F401 - registers SQLAlchemy capacit
 from .audit import init_audit
 from .auth import init_auth
 from .docs import init_docs
+from .observability import init_observability
 from .rate_limit import init_rate_limiting
 from .waitlist import init_waitlist
 
@@ -20,6 +21,8 @@ def create_app(database_url: str | None = None, *, auth_required: bool = True):
         app.config["SECRET_KEY"] = os.getenv("APP_SECRET_KEY", "development-only-change-me")
     if "docs" not in app.blueprints:
         init_docs(app)
+    if "observability" not in app.blueprints:
+        init_observability(app)
     if "waitlist" not in app.blueprints:
         init_waitlist(app)
     if "audit" not in app.blueprints:
