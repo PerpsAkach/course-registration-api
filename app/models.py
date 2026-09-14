@@ -27,6 +27,7 @@ class Student(Base):
     enrollments: Mapped[list["Enrollment"]] = relationship(back_populates="student", cascade="all, delete-orphan")
     section_enrollments: Mapped[list["SectionEnrollment"]] = relationship(back_populates="student", cascade="all, delete-orphan")
     completions: Mapped[list["CourseCompletion"]] = relationship(back_populates="student", cascade="all, delete-orphan")
+    waitlist_entries: Mapped[list["WaitlistEntry"]] = relationship(back_populates="student", cascade="all, delete-orphan")
 
 
 class Course(Base):
@@ -95,6 +96,7 @@ class Section(Base):
     course: Mapped[Course] = relationship(back_populates="sections")
     term: Mapped[AcademicTerm] = relationship(back_populates="sections")
     section_enrollments: Mapped[list["SectionEnrollment"]] = relationship(back_populates="section", cascade="all, delete-orphan")
+    waitlist_entries: Mapped[list["WaitlistEntry"]] = relationship(back_populates="section", cascade="all, delete-orphan")
 
 
 class Prerequisite(Base):
@@ -144,6 +146,25 @@ class SectionEnrollment(Base):
 
     student: Mapped[Student] = relationship(back_populates="section_enrollments")
     section: Mapped[Section] = relationship(back_populates="section_enrollments")
+
+
+class WaitlistEntry(Base):
+    __tablename__ = "waitlist_entries"
+    __table_args__ = (
+        UniqueConstraint("student_id", "section_id", name="uq_student_section_waitlist"),
+        CheckConstraint("status IN ('waiting', 'promoted', 'cancelled')", name="ck_waitlist_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    section_id: Mapped[int] = mapped_column(ForeignKey("sections.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="waiting", index=True)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    promoted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    student: Mapped[Student] = relationship(back_populates="waitlist_entries")
+    section: Mapped[Section] = relationship(back_populates="waitlist_entries")
 
 
 class Enrollment(Base):
