@@ -44,20 +44,27 @@ The following capabilities were subsequently built as new portfolio engineering 
 - schedule-conflict detection
 - section-level capacity enforcement
 - transactional PostgreSQL row locking for final-seat allocation
+- real PostgreSQL concurrency integration testing for final-seat protection
 - section drop/reactivation
 - FIFO waitlists
 - automatic waitlist promotion
 - authentication and time-limited bearer tokens
+- account-wide bearer-token revocation
+- password change with prior-token invalidation
 - `student`, `registrar`, and `admin` RBAC
 - student ownership boundaries
 - structured request audit logging and request IDs
 - admin-only audit-event retrieval
 - configurable API rate limiting
+- Prometheus-compatible request metrics and latency histograms
 - expanded automated testing
 - GitHub Actions CI
 - Alembic schema migrations
 - PostgreSQL driver/runtime support
 - OpenAPI 3.1 documentation
+- interactive Swagger UI
+- Docker/Gunicorn production runtime
+- local Docker Compose PostgreSQL deployment stack
 
 ## CURRENT IMPLEMENTATION STATUS
 
@@ -74,6 +81,6 @@ Unless stronger source artifacts are recovered, the following remain unverified 
 - exact original database engine
 - exact original schema columns and constraints
 - exact original authentication or authorization behavior
-- whether terms, sections, prerequisites, waitlists, schedule validation, migrations, PostgreSQL support, concurrency controls, audit logging, or rate limiting existed in the historical coursework
+- whether terms, sections, prerequisites, waitlists, schedule validation, migrations, PostgreSQL support, concurrency controls, audit logging, rate limiting, observability, or deployment tooling existed in the historical coursework
 
 Portfolio descriptions should continue to distinguish historical evidence from modern reconstruction and enhancement.
