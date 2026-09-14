@@ -30,6 +30,17 @@ def create_course(client, code="CS101", title="Introduction to Programming", cap
     })
 
 
+def create_term(client, name="Fall", year=2026):
+    return client.post("/api/terms", json={
+        "name": name,
+        "year": year,
+        "starts_on": f"{year}-09-01",
+        "ends_on": f"{year}-12-20",
+        "registration_opens_on": f"{year}-04-01",
+        "registration_closes_on": f"{year}-09-10",
+    })
+
+
 def test_health(client):
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -147,3 +158,86 @@ def test_duplicate_and_capacity_errors(client):
     })
     assert full.status_code == 409
     assert full.get_json()["error"] == "course_full"
+
+
+def test_term_creation_and_listing(client):
+    term = create_term(client)
+    assert term.status_code == 201
+    payload = term.get_json()
+    assert payload["name"] == "Fall"
+    assert payload["year"] == 2026
+
+    listed = client.get("/api/terms")
+    assert listed.status_code == 200
+    assert listed.get_json()["items"][0]["id"] == payload["id"]
+
+    duplicate = create_term(client)
+    assert duplicate.status_code == 409
+
+
+def test_section_creation_schedule_and_filters(client):
+    course = create_course(client)
+    term = create_term(client)
+    course_id = course.get_json()["id"]
+    term_id = term.get_json()["id"]
+
+    section = client.post("/api/sections", json={
+        "course_id": course_id,
+        "term_id": term_id,
+        "section_number": "001",
+        "instructor": "Dr. Njoroge",
+        "capacity": 25,
+        "meeting_days": "MWF",
+        "starts_at": "09:00",
+        "ends_at": "09:50",
+        "location": "SCI-210",
+    })
+    assert section.status_code == 201
+    payload = section.get_json()
+    assert payload["meeting_days"] == "MWF"
+    assert payload["starts_at"] == "09:00"
+    assert payload["ends_at"] == "09:50"
+
+    listed = client.get(f"/api/sections?course_id={course_id}&term_id={term_id}")
+    assert listed.status_code == 200
+    assert len(listed.get_json()["items"]) == 1
+
+    fetched = client.get(f"/api/sections/{payload['id']}")
+    assert fetched.status_code == 200
+    assert fetched.get_json()["location"] == "SCI-210"
+
+    duplicate = client.post("/api/sections", json={
+        "course_id": course_id,
+        "term_id": term_id,
+        "section_number": "001",
+        "capacity": 25,
+    })
+    assert duplicate.status_code == 409
+
+
+def test_prerequisite_relationship(client):
+    intro = create_course(client, code="CS101", title="Introduction")
+    advanced = create_course(client, code="CS201", title="Data Structures")
+    intro_id = intro.get_json()["id"]
+    advanced_id = advanced.get_json()["id"]
+
+    added = client.post(f"/api/courses/{advanced_id}/prerequisites", json={
+        "required_course_id": intro_id,
+    })
+    assert added.status_code == 201
+
+    listed = client.get(f"/api/courses/{advanced_id}/prerequisites")
+    assert listed.status_code == 200
+    items = listed.get_json()["items"]
+    assert len(items) == 1
+    assert items[0]["required_course"]["code"] == "CS101"
+
+    duplicate = client.post(f"/api/courses/{advanced_id}/prerequisites", json={
+        "required_course_id": intro_id,
+    })
+    assert duplicate.status_code == 409
+
+    self_prereq = client.post(f"/api/courses/{intro_id}/prerequisites", json={
+        "required_course_id": intro_id,
+    })
+    assert self_prereq.status_code == 400
