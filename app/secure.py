@@ -8,11 +8,12 @@ from . import create_app as create_core_app
 from . import capacity as _capacity  # noqa: F401 - registers SQLAlchemy capacity guard
 from .audit import init_audit
 from .auth import init_auth
+from .rate_limit import init_rate_limiting
 from .waitlist import init_waitlist
 
 
 def create_app(database_url: str | None = None, *, auth_required: bool = True):
-    """Create the production-oriented application with waitlists, audit, and RBAC enabled."""
+    """Create the production-oriented application with security controls enabled."""
     app = create_core_app(database_url)
     if not app.config.get("SECRET_KEY"):
         app.config["SECRET_KEY"] = os.getenv("APP_SECRET_KEY", "development-only-change-me")
@@ -22,6 +23,7 @@ def create_app(database_url: str | None = None, *, auth_required: bool = True):
         init_audit(app)
     if "auth" not in app.blueprints:
         init_auth(app, required=auth_required)
+    init_rate_limiting(app)
 
     @app.errorhandler(_capacity.SectionCapacityExceeded)
     def _section_capacity_exceeded(exc):
