@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from . import create_app as create_core_app
+from . import capacity as _capacity  # noqa: F401 - registers SQLAlchemy capacity guard
 from .auth import init_auth
 from .waitlist import init_waitlist
 
