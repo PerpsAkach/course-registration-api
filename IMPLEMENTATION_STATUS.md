@@ -41,17 +41,17 @@ This document separates the current public implementation from historical eviden
 | Rate limiting | Implemented | Flask-Limiter global default + stricter login/bootstrap limits |
 | Shared rate-limit backend configuration | Supported | configurable through `RATELIMIT_STORAGE_URI`; memory backend is default for dev/tests |
 | Alembic migrations | Implemented | baseline plus incremental audit/token-revocation revisions |
-| Migration CI verification | Implemented | upgrade → downgrade → upgrade cycle before tests |
+| Migration CI verification | Implemented and passing | upgrade → downgrade → upgrade cycle before tests |
 | PostgreSQL runtime support | Implemented | `psycopg` + URL normalization + connection pre-ping |
 | OpenAPI 3.1 contract | Implemented | `docs/openapi.yaml` |
 | Interactive API documentation | Implemented | Swagger UI at `/docs`, spec at `/openapi.yaml` |
-| OpenAPI structure test | Implemented | YAML parse + core path/security assertions |
+| Prometheus observability endpoint | Implemented and passing | `/metrics` exports low-cardinality request counters and latency histograms |
 | Containerized production runtime | Implemented | Dockerfile + Gunicorn |
 | Local PostgreSQL deployment stack | Implemented | `compose.yaml` with PostgreSQL service and health checks |
 | Production container CI build | Implemented and passing | image is built after migrations/tests |
 | Database initialization CLI | Implemented | `flask --app run.py init-db` |
-| Automated tests | Implemented | CRUD, registration rules, waitlists, auth/RBAC, revocation, capacity guard, audit, rate limiting, OpenAPI, PostgreSQL concurrency, and regression behavior |
-| GitHub Actions CI | Implemented | migrations, tests, PostgreSQL concurrency integration, and container build |
+| Automated tests | Implemented | CRUD, registration rules, waitlists, auth/RBAC, revocation, capacity guard, audit, rate limiting, OpenAPI, metrics, PostgreSQL concurrency, and regression behavior |
+| GitHub Actions CI | Implemented and passing | migrations, unit/API tests, real PostgreSQL concurrency integration, and production image build |
 
 ## Relational integrity currently represented
 
@@ -80,23 +80,24 @@ The current model includes application and/or SQL-level controls for:
 | Authentication/RBAC and token revocation | Separated in `app/auth.py` |
 | Structured audit logging | Separated in `app/audit.py` |
 | Rate limiting | Separated in `app/rate_limit.py` |
+| Prometheus observability | Separated in `app/observability.py` |
 | Interactive API docs | Separated in `app/docs.py` |
 | Secure application composition | Separated in `app/secure.py` |
 | Schema migrations | Separated under `migrations/` |
 | Machine-readable API contract | `docs/openapi.yaml` |
 | Container/deployment configuration | `Dockerfile`, `.dockerignore`, `compose.yaml` |
-| Full service layer | Not yet implemented |
+| Full registration service layer | Not yet implemented |
 | Full repository/data-access layer | Not yet implemented |
 
 ## Concurrency scope
 
 The enhanced secure runtime registers a SQLAlchemy transaction guard for active section-seat changes. On PostgreSQL, the guard locks the target section row with `SELECT ... FOR UPDATE`, recounts active section enrollments inside the transaction, and rejects an over-capacity transaction.
 
-The strategy is exercised in CI against a real PostgreSQL service: two independent concurrent transactions compete for a capacity-one section, the test verifies that one commit succeeds and the other is rejected, and the final active-enrollment count remains exactly one.
+The strategy is exercised in CI against a real PostgreSQL 17 service: two independent concurrent transactions compete for a capacity-one section, one commit succeeds, the other is rejected, and the final active-enrollment count remains exactly one.
 
-This is a focused concurrency integration test, not a high-volume production load benchmark.
+This is legitimate integration-level validation of the final-seat locking strategy. It should not be described as a high-volume production load benchmark.
 
-## Not currently implemented / production gaps
+## Remaining production / architecture gaps
 
 | Capability | Status |
 |---|---|
@@ -104,10 +105,12 @@ This is a focused concurrency integration test, not a high-volume production loa
 | Password reset / recovery workflow | Not implemented |
 | Per-token selective revocation / refresh-token architecture | Not implemented |
 | Shared production rate-limit backend deployment | Not configured in repository |
-| Production observability / metrics stack | Not implemented |
+| External Prometheus/Grafana deployment | Not configured in repository |
+| Centralized log aggregation | Not configured in repository |
 | Managed deployment target / infrastructure-as-code | Not implemented |
 | External secret-management integration | Not implemented |
-| Full service/repository architecture | Not implemented |
+| Full registration service layer | Not yet implemented |
+| Full repository/data-access layer | Not yet implemented |
 | `seed-db` CLI command | Not implemented |
 
 ## Provenance classification
@@ -118,7 +121,7 @@ The current repository intentionally mixes reconstruction and new portfolio engi
 |---|---|
 | **RECOVERED** | Broad historical concept: Python + Flask + SQL + student/course/registration + database/REST coursework |
 | **RECONSTRUCTED** | Initial student/course/enrollment Flask API built faithfully from the recovered high-level project concept |
-| **ENHANCED** | CRUD expansion, search, pagination, terms, sections, prerequisites, completion tracking, registration rules, schedule conflicts, waitlists, automatic promotion, authentication, RBAC, token revocation, migrations, PostgreSQL support, transactional capacity protection, PostgreSQL concurrency testing, audit logging, rate limiting, OpenAPI/Swagger documentation, containerization, expanded tests, and CI |
+| **ENHANCED** | CRUD expansion, search, pagination, terms, sections, prerequisites, completion tracking, registration rules, schedule conflicts, waitlists, automatic promotion, authentication, RBAC, token revocation, migrations, PostgreSQL support, transactional capacity protection, PostgreSQL concurrency testing, audit logging, rate limiting, OpenAPI/Swagger documentation, Prometheus metrics, containerization, expanded tests, and CI |
 | **UNVERIFIED** | Any exact historical source implementation, exact historical endpoint set, exact historical database engine, or exact richer behavior not supported by recovered artifacts |
 
 The public README should describe enhanced features as current portfolio functionality, not as recovered historical coursework.
