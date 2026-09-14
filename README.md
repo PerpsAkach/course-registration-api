@@ -1,6 +1,6 @@
 # Course Registration REST API
 
-> Flask + SQLAlchemy registration backend with academic terms, course sections, prerequisites, schedule validation, waitlists, authentication, role-based authorization, and automated CI.
+> Flask + SQLAlchemy registration backend with academic terms, course sections, prerequisites, schedule validation, waitlists, authentication, role-based authorization, migrations, PostgreSQL support, transactional capacity protection, OpenAPI documentation, and automated CI.
 
 [![CI](https://github.com/PerpsAkach/course-registration-api/actions/workflows/ci.yml/badge.svg)](https://github.com/PerpsAkach/course-registration-api/actions/workflows/ci.yml)
 [![Portfolio](https://img.shields.io/badge/Portfolio-perpsakach.github.io-d7ff5f?style=flat-square&labelColor=11151a)](https://perpsakach.github.io/)
@@ -13,7 +13,7 @@
 
 This repository started as a portfolio reconstruction of a course-registration/database-systems project and has since been deliberately enhanced into a substantially richer backend system.
 
-The current implementation models the real registration domain rather than only a student-to-course join table. It now includes students, courses, academic terms, sections, meeting schedules, prerequisites, course completions, section registrations, waitlists, authentication, and role-based access control.
+The current implementation models the real registration domain rather than only a student-to-course join table. It includes students, courses, academic terms, sections, meeting schedules, prerequisites, course completions, section registrations, waitlists, authentication, role-based access control, schema migrations, PostgreSQL runtime support, and an OpenAPI contract.
 
 The public code is therefore best described as:
 
@@ -35,6 +35,7 @@ The current API supports:
 - duplicate-course prevention within a term
 - schedule-conflict detection
 - section-level capacity enforcement
+- transactional final-seat protection using PostgreSQL row locking
 - drop/reactivation behavior
 - FIFO waitlists
 - automatic promotion of the next eligible waitlisted student when a seat opens
@@ -42,6 +43,9 @@ The current API supports:
 - `student`, `registrar`, and `admin` roles
 - student self-service authorization boundaries
 - admin-managed user creation
+- Alembic migrations
+- PostgreSQL driver/runtime support
+- OpenAPI 3.1 documentation in `docs/openapi.yaml`
 - pytest coverage and GitHub Actions CI
 
 ## Architecture
@@ -52,9 +56,11 @@ flowchart LR
     Runtime --> Auth[Authentication + RBAC]
     Runtime --> Core[Core Registration Routes]
     Runtime --> Wait[Waitlist Workflow]
+    Runtime --> Capacity[Transactional Capacity Guard]
     Auth --> DB[(SQLAlchemy / Relational DB)]
     Core --> DB
     Wait --> DB
+    Capacity --> DB
 
     Core --> Rules[Registration Rules]
     Rules --> P[Prerequisites]
@@ -63,7 +69,7 @@ flowchart LR
     Rules --> S[Schedule Conflicts]
 ```
 
-Runtime composition is handled by `app/secure.py`. It builds the core Flask application, registers waitlist behavior, and enables authentication/authorization. The executable entry point in `run.py` uses this secure application factory.
+Runtime composition is handled by `app/secure.py`. It builds the core Flask application, registers waitlist behavior, enables authentication/authorization, and activates the transactional capacity guard. The executable entry point in `run.py` uses this secure application factory.
 
 ### Main code organization
 
@@ -71,13 +77,17 @@ Runtime composition is handled by `app/secure.py`. It builds the core Flask appl
 app/
 ├── __init__.py   # core REST endpoints and registration rules
 ├── auth.py       # authentication, user accounts, RBAC
+├── capacity.py   # transactional section-capacity guard
 ├── db.py         # SQLAlchemy engine/session configuration
 ├── models.py     # academic/registration relational model
 ├── secure.py     # production-oriented application composition
 └── waitlist.py   # waitlist lifecycle and automatic promotion
+
+migrations/       # Alembic migration environment and versions
+docs/openapi.yaml # OpenAPI 3.1 API contract
 ```
 
-The project is not yet split into a full route/service/repository package hierarchy. That remains a possible architectural refinement, but the current separation already isolates database configuration, authentication, waitlisting, application composition, and the central domain model.
+The project is not yet split into a full route/service/repository package hierarchy. That remains a possible architectural refinement, but the current separation already isolates database configuration, authentication, waitlisting, transactional capacity enforcement, application composition, migrations, and the central domain model.
 
 ## Domain model
 
@@ -173,10 +183,17 @@ flowchart TD
     F -- No --> G{Seat available?}
     G -- Yes --> H[Create or reactivate section enrollment]
     G -- No --> X6[409 section_full]
-    H --> I[201 Created]
+    H --> I[Transactional capacity guard]
+    I --> J[201 Created]
 ```
 
 When a section is full, an eligible student may join its waitlist. Dropping an active section enrollment triggers FIFO evaluation of waiting students; the first student who still satisfies the registration rules is automatically promoted.
+
+### Final-seat concurrency protection
+
+The route-level capacity check provides a fast domain response, but production PostgreSQL deployments also activate `app/capacity.py`. Before an active section seat is committed, the guard locks the target `sections` row with `SELECT ... FOR UPDATE`, recounts active section enrollments inside the transaction, and rejects an over-capacity transaction with `409 section_full`.
+
+That row lock serializes competing registrations for the same section on PostgreSQL. SQLite remains useful for development and tests, but it does not provide PostgreSQL-equivalent row-level `FOR UPDATE` semantics, so production concurrency claims are scoped to databases that support the locking strategy.
 
 ## Authentication and authorization
 
@@ -272,6 +289,8 @@ export APP_SECRET_KEY="replace-with-a-long-random-secret"
 
 The reconstruction's course-level enrollment endpoints also remain available under `/api/enrollments`.
 
+The machine-readable API contract is maintained at [`docs/openapi.yaml`](docs/openapi.yaml).
+
 ## Search and pagination
 
 Student and course collection endpoints support `q` search. Student/course/enrollment collection APIs also implement pagination where provided by the core routes, using `page` and `per_page` with defensive bounds.
@@ -283,7 +302,7 @@ GET /api/students?q=amina&page=1&per_page=25
 GET /api/courses?q=programming&page=1&per_page=25
 ```
 
-## Database integrity
+## Database integrity and migrations
 
 The relational model uses application validation plus SQL-level constraints including:
 
@@ -296,6 +315,10 @@ The relational model uses application validation plus SQL-level constraints incl
 - prerequisite self-reference prevention
 - controlled lifecycle states for enrollments and waitlist entries
 - foreign-key relationships across the registration domain
+
+Alembic manages schema evolution. The repository includes a baseline migration for the current schema, and CI verifies `upgrade head → downgrade base → upgrade head` before running tests.
+
+The application defaults to SQLite for local use and supports PostgreSQL through `psycopg`. Common hosted `postgres://` URLs are normalized for SQLAlchemy/psycopg compatibility.
 
 ## Tests and CI
 
@@ -311,6 +334,8 @@ The test suite now covers considerably more than the original reconstruction, in
 - registration windows
 - schedule conflicts
 - section capacity
+- transactional capacity guard behavior
+- PostgreSQL `FOR UPDATE` lock generation
 - waitlist lifecycle
 - automatic waitlist promotion
 - authentication requirements
@@ -318,8 +343,10 @@ The test suite now covers considerably more than the original reconstruction, in
 - login failures
 - admin/registrar/student role boundaries
 - student ownership restrictions
+- OpenAPI specification structure
+- Alembic migration upgrade/downgrade cycles in CI
 
-GitHub Actions runs the pytest suite on pushes and pull requests to `main`. The current workflow is passing.
+GitHub Actions runs migration verification and the pytest suite on pushes and pull requests to `main`. The current capacity/migration test run is passing.
 
 ## Quick start
 
@@ -327,9 +354,11 @@ GitHub Actions runs the pytest suite on pushes and pull requests to `main`. The 
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-flask --app run.py init-db
+alembic upgrade head
 flask --app run.py run --debug
 ```
+
+`flask --app run.py init-db` remains available for simple local reconstruction workflows, but Alembic is the preferred schema-management path for the enhanced backend.
 
 Run tests:
 
@@ -337,21 +366,25 @@ Run tests:
 python -m pytest -q
 ```
 
-The application uses SQLite by default. `DATABASE_URL` can be supplied to change the SQLAlchemy connection URL where supported by the installed driver.
+SQLite is the default development database. For PostgreSQL, provide a SQLAlchemy-compatible connection string through `DATABASE_URL`, for example:
+
+```bash
+export DATABASE_URL="postgresql+psycopg://user:password@host:5432/course_registration"
+alembic upgrade head
+```
 
 ## Current production gaps
 
 This is now a strong portfolio backend, but it is not presented as a finished university production registration platform. Important remaining engineering work includes:
 
-- schema migrations rather than `create_all`-style initialization
-- a production database configuration such as PostgreSQL and database-specific concurrency testing
-- concurrency-safe seat allocation under simultaneous registration attempts
-- account password reset/recovery and token revocation
+- a real PostgreSQL integration environment/load test with simultaneous registration workers
+- account password reset/recovery and explicit token revocation
 - rate limiting / abuse controls
 - structured audit logging
-- OpenAPI/Swagger documentation
+- interactive Swagger UI or equivalent generated documentation surface
 - deeper service-layer extraction from `app/__init__.py`
-- deployment configuration and observability
+- production observability / metrics
+- deployment infrastructure and secret-management integration
 
 These are intentionally listed as gaps rather than implied capabilities.
 
@@ -363,7 +396,7 @@ Accordingly:
 
 - **RECOVERED:** broad project concept and academic context
 - **RECONSTRUCTED:** initial student/course/enrollment Flask API
-- **ENHANCED:** CRUD expansion, terms, sections, prerequisites, registration rules, completions, waitlists, automatic promotion, authentication, RBAC, expanded tests, and CI
+- **ENHANCED:** CRUD expansion, terms, sections, prerequisites, registration rules, completions, waitlists, automatic promotion, authentication, RBAC, migrations, PostgreSQL support, transactional capacity protection, OpenAPI documentation, expanded tests, and CI
 
 See [`PROVENANCE.md`](PROVENANCE.md) and [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the explicit boundary.
 
