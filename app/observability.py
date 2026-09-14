@@ -65,4 +65,4 @@ def init_observability(app) -> None:
 @bp.get("/metrics")
 def metrics():
     registry = current_app.extensions["prometheus_registry"]
-    return Response(generate_latest(registry), mimetype=CONTENT_TYPE_LATEST)
+    return Response(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
