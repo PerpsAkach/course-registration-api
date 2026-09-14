@@ -32,13 +32,18 @@ This document separates the current public implementation from historical eviden
 | Role-based authorization | Implemented | `student`, `registrar`, `admin` |
 | Student ownership boundary | Implemented | student accounts restricted to own registration/waitlist resources plus catalog reads |
 | Admin account management | Implemented | create/list user accounts |
-| Alembic migrations | Implemented | baseline migration + migration environment |
+| Structured audit logging | Implemented | mutating HTTP requests persisted without request-body capture |
+| Audit request IDs | Implemented | `X-Request-ID` response header + persisted request ID |
+| Audit log retrieval | Implemented | `GET /api/audit-events`; admin only |
+| Rate limiting | Implemented | Flask-Limiter global default + stricter login/bootstrap limits |
+| Shared rate-limit backend configuration | Supported | configurable through `RATELIMIT_STORAGE_URI`; memory backend is default for dev/tests |
+| Alembic migrations | Implemented | frozen baseline + audit-events migration + migration environment |
 | Migration CI verification | Implemented and passing | upgrade → downgrade → upgrade cycle before tests |
 | PostgreSQL runtime support | Implemented | `psycopg` + URL normalization + connection pre-ping |
 | OpenAPI 3.1 contract | Implemented | `docs/openapi.yaml` |
 | OpenAPI structure test | Implemented | YAML parse + core path/security assertions |
 | Database initialization CLI | Implemented | `flask --app run.py init-db` |
-| Automated tests | Implemented | CRUD, registration rules, waitlists, auth/RBAC, capacity guard, OpenAPI, and regression behavior |
+| Automated tests | Implemented | CRUD, registration rules, waitlists, auth/RBAC, capacity guard, audit, rate limiting, OpenAPI, and regression behavior |
 | GitHub Actions CI | Implemented and passing | `.github/workflows/ci.yml` |
 
 ## Relational integrity currently represented
@@ -54,7 +59,7 @@ The current model includes application and/or SQL-level controls for:
 - unique student/section waitlist relationships
 - prerequisite self-reference prevention
 - controlled enrollment and waitlist status values
-- foreign-key relationships across students, courses, terms, sections, completions, enrollments, and waitlists
+- foreign-key relationships across students, courses, terms, sections, completions, enrollments, waitlists, users, and audit events
 
 ## Current architecture status
 
@@ -66,6 +71,8 @@ The current model includes application and/or SQL-level controls for:
 | Waitlist workflow | Separated in `app/waitlist.py` |
 | Transactional capacity guard | Separated in `app/capacity.py` |
 | Authentication/RBAC | Separated in `app/auth.py` |
+| Structured audit logging | Separated in `app/audit.py` |
+| Rate limiting | Separated in `app/rate_limit.py` |
 | Secure application composition | Separated in `app/secure.py` |
 | Schema migrations | Separated under `migrations/` |
 | Machine-readable API contract | `docs/openapi.yaml` |
@@ -85,8 +92,7 @@ This is the production concurrency strategy for final-seat allocation. SQLite is
 | Real PostgreSQL multi-worker concurrency integration/load test | Not implemented |
 | Password reset / recovery | Not implemented |
 | Explicit bearer-token revocation | Not implemented |
-| Rate limiting | Not implemented |
-| Structured audit log | Not implemented |
+| Shared production rate-limit backend deployment | Not configured in repository |
 | Interactive Swagger UI / generated docs site | Not implemented |
 | Production observability / metrics | Not implemented |
 | Deployment infrastructure | Not implemented |
@@ -102,7 +108,7 @@ The current repository intentionally mixes reconstruction and new portfolio engi
 |---|---|
 | **RECOVERED** | Broad historical concept: Python + Flask + SQL + student/course/registration + database/REST coursework |
 | **RECONSTRUCTED** | Initial student/course/enrollment Flask API built faithfully from the recovered high-level project concept |
-| **ENHANCED** | CRUD expansion, search, pagination, terms, sections, prerequisites, completion tracking, registration rules, schedule conflicts, waitlists, automatic promotion, authentication, RBAC, migrations, PostgreSQL support, transactional capacity protection, OpenAPI documentation, expanded tests, and CI |
+| **ENHANCED** | CRUD expansion, search, pagination, terms, sections, prerequisites, completion tracking, registration rules, schedule conflicts, waitlists, automatic promotion, authentication, RBAC, migrations, PostgreSQL support, transactional capacity protection, audit logging, rate limiting, OpenAPI documentation, expanded tests, and CI |
 | **UNVERIFIED** | Any exact historical source implementation, exact historical endpoint set, exact historical database engine, or exact richer behavior not supported by recovered artifacts |
 
 The public README should describe enhanced features as current portfolio functionality, not as recovered historical coursework.
