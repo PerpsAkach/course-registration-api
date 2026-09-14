@@ -43,17 +43,20 @@ The following capabilities were subsequently built as new portfolio engineering 
 - duplicate-course prevention within a term
 - schedule-conflict detection
 - section-level capacity enforcement
+- transactional PostgreSQL row locking for final-seat allocation
 - section drop/reactivation
 - FIFO waitlists
 - automatic waitlist promotion
-- authentication and bearer tokens
+- authentication and time-limited bearer tokens
 - `student`, `registrar`, and `admin` RBAC
 - student ownership boundaries
+- structured request audit logging and request IDs
+- admin-only audit-event retrieval
+- configurable API rate limiting
 - expanded automated testing
 - GitHub Actions CI
 - Alembic schema migrations
 - PostgreSQL driver/runtime support
-- transactional PostgreSQL row locking for final-seat capacity enforcement
 - OpenAPI 3.1 documentation
 
 ## CURRENT IMPLEMENTATION STATUS
@@ -71,6 +74,6 @@ Unless stronger source artifacts are recovered, the following remain unverified 
 - exact original database engine
 - exact original schema columns and constraints
 - exact original authentication or authorization behavior
-- whether terms, sections, prerequisites, waitlists, schedule validation, migrations, PostgreSQL support, or concurrency controls existed in the historical coursework
+- whether terms, sections, prerequisites, waitlists, schedule validation, migrations, PostgreSQL support, concurrency controls, audit logging, or rate limiting existed in the historical coursework
 
 Portfolio descriptions should continue to distinguish historical evidence from modern reconstruction and enhancement.
