@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
-from flask import current_app
+from flask import current_app, jsonify, request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .db import new_session
 from .models import (
     CourseCompletion,
     Prerequisite,
@@ -157,11 +158,6 @@ def register_for_section(
     section_id: int,
     as_of: date,
 ) -> SectionEnrollment:
-    """Register or reactivate one student in a section.
-
-    The caller owns commit/rollback. The SQLAlchemy capacity guard remains the
-    final transactional protection against concurrent over-allocation.
-    """
     student = session.get(Student, student_id)
     section = session.get(Section, section_id)
     if student is None or section is None:
@@ -274,11 +270,6 @@ def promote_next_eligible(
     section_id: int,
     as_of: date,
 ) -> WaitlistEntry | None:
-    """Promote the first currently eligible waiting student.
-
-    Promotion re-evaluates the registration window, prerequisites, duplicate
-    course registration, and schedule conflicts at promotion time.
-    """
     section = session.get(Section, section_id)
     if section is None or active_section_count(session, section_id) >= section.capacity:
         return None
@@ -326,7 +317,6 @@ def drop_section_and_promote(
     enrollment_id: int,
     as_of: date,
 ) -> tuple[SectionEnrollment, WaitlistEntry | None]:
-    """Drop a section enrollment and promote a waiter in the same transaction."""
     enrollment = session.get(SectionEnrollment, enrollment_id)
     if enrollment is None:
         raise RegistrationError("section_enrollment_not_found", status_code=404)
@@ -336,9 +326,74 @@ def drop_section_and_promote(
     section_id = enrollment.section_id
     enrollment.status = "dropped"
     enrollment.dropped_at = datetime.now(timezone.utc)
-
-    # No intermediate commit: the pending seat release and possible promotion
-    # are flushed/committed together by the route transaction.
     promoted = promote_next_eligible(session, section_id=section_id, as_of=as_of)
     session.flush()
     return enrollment, promoted
+
+
+def _enrollment_json(enrollment: SectionEnrollment) -> dict[str, Any]:
+    return {
+        "id": enrollment.id,
+        "student_id": enrollment.student_id,
+        "section_id": enrollment.section_id,
+        "status": enrollment.status,
+        "enrolled_at": enrollment.enrolled_at.isoformat() if enrollment.enrolled_at else None,
+        "dropped_at": enrollment.dropped_at.isoformat() if enrollment.dropped_at else None,
+    }
+
+
+def install_registration_service(app) -> None:
+    """Replace legacy section mutation handlers with thin service adapters.
+
+    Existing URL rules and endpoint names are preserved, so this can be
+    installed on the reconstructed core app without duplicating routes.
+    """
+    if app.extensions.get("registration_service_installed"):
+        return
+
+    if "create_section_enrollment" not in app.view_functions or "drop_section_enrollment" not in app.view_functions:
+        raise RuntimeError("core section-enrollment routes must be registered before service installation")
+
+    def create_section_enrollment_service():
+        data = request.get_json(force=True)
+        try:
+            student_id = int(data["student_id"])
+            section_id = int(data["section_id"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": "invalid_section_enrollment"}), 400
+
+        with new_session() as session:
+            try:
+                enrollment = register_for_section(
+                    session,
+                    student_id=student_id,
+                    section_id=section_id,
+                    as_of=policy_date(),
+                )
+                session.commit()
+            except RegistrationError as exc:
+                session.rollback()
+                return jsonify(exc.payload()), exc.status_code
+            return jsonify(_enrollment_json(enrollment)), 201
+
+    def drop_section_enrollment_service(enrollment_id: int):
+        with new_session() as session:
+            try:
+                enrollment, promoted = drop_section_and_promote(
+                    session,
+                    enrollment_id=enrollment_id,
+                    as_of=policy_date(),
+                )
+                payload = _enrollment_json(enrollment)
+                if promoted is not None:
+                    payload["promoted_waitlist_entry_id"] = promoted.id
+                    payload["promoted_student_id"] = promoted.student_id
+                session.commit()
+            except RegistrationError as exc:
+                session.rollback()
+                return jsonify(exc.payload()), exc.status_code
+            return jsonify(payload)
+
+    app.view_functions["create_section_enrollment"] = create_section_enrollment_service
+    app.view_functions["drop_section_enrollment"] = drop_section_enrollment_service
+    app.extensions["registration_service_installed"] = True
