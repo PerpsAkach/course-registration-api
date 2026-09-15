@@ -326,6 +326,11 @@ def drop_section_and_promote(
     section_id = enrollment.section_id
     enrollment.status = "dropped"
     enrollment.dropped_at = datetime.now(timezone.utc)
+
+    # Materialize the seat release before evaluating the waitlist, but keep the
+    # transaction open. Flush is not a commit, so the drop and any promotion
+    # still succeed or roll back as one database transaction.
+    session.flush()
     promoted = promote_next_eligible(session, section_id=section_id, as_of=as_of)
     session.flush()
     return enrollment, promoted
