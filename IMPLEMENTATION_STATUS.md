@@ -40,6 +40,7 @@ This document separates the current public implementation from historical eviden
 | Role-based authorization | Implemented | `student`, `registrar`, `admin` |
 | Student ownership boundary | Implemented and tested | secure runtime restricts registration/waitlist create/list operations to linked student |
 | Admin account management | Implemented | create/list user accounts |
+| Production secret fail-fast | Implemented and tested | `APP_ENV=production` refuses startup unless `APP_SECRET_KEY` is explicitly configured and is not a known development fallback |
 | Structured audit logging | Implemented | mutating HTTP requests persisted without request-body capture |
 | Audit request IDs | Implemented | `X-Request-ID` response header + persisted request ID |
 | Audit log retrieval | Implemented | `GET /api/audit-events`; admin only |
@@ -55,8 +56,8 @@ This document separates the current public implementation from historical eviden
 | Local PostgreSQL deployment stack | Implemented | `compose.yaml` with PostgreSQL service and health checks |
 | Production container CI build | Implemented and passing | image is built after migrations/tests |
 | Database initialization CLI | Implemented | `flask --app run.py init-db` |
-| Automated tests | Implemented | CRUD, policy rules, waitlists, atomic rollback, auth/RBAC, ownership, revocation, capacity guard, audit, rate limiting, OpenAPI, metrics, PostgreSQL concurrency, and regression behavior |
-| GitHub Actions CI | Implemented | migrations, unit/API tests, real PostgreSQL concurrency integration, and production image build |
+| Automated tests | Implemented | CRUD, policy rules, waitlists, atomic rollback, auth/RBAC, ownership, revocation, secret guard, capacity guard, audit, rate limiting, OpenAPI, metrics, PostgreSQL concurrency, and regression behavior |
+| GitHub Actions CI | Implemented and passing | migrations, unit/API tests, real PostgreSQL concurrency integration, and production image build |
 
 ## Relational integrity currently represented
 
@@ -84,6 +85,7 @@ The current model includes application and/or SQL-level controls for:
 | Waitlist HTTP workflow | Separated in `app/waitlist.py` and backed by shared service |
 | Transactional capacity guard | Separated in `app/capacity.py` |
 | Authentication/RBAC and token revocation | Separated in `app/auth.py` |
+| Production secret validation | Separated in `app/secure.py` |
 | Structured audit logging | Separated in `app/audit.py` |
 | Rate limiting | Separated in `app/rate_limit.py` |
 | Prometheus observability | Separated in `app/observability.py` |
@@ -139,7 +141,7 @@ Therefore, claims about server-controlled policy time, atomic drop/promotion, an
 | External Prometheus/Grafana deployment | Not configured in repository |
 | Centralized log aggregation | Not configured in repository |
 | Managed deployment target / infrastructure-as-code | Not implemented |
-| External secret-management integration | Not implemented |
+| External secret-management integration | Not implemented; production runtime does fail fast on missing/known development application secret |
 | General repository/data-access layer | Not implemented; not currently required for domain correctness |
 | `seed-db` CLI command | Not implemented |
 | Prerequisite-cycle detection | Not implemented |
@@ -153,7 +155,7 @@ The current repository intentionally mixes reconstruction and new portfolio engi
 |---|---|
 | **RECOVERED** | Broad historical concept: Python + Flask + SQL + student/course/registration + database/REST coursework |
 | **RECONSTRUCTED** | Initial student/course/enrollment Flask API built faithfully from the recovered high-level project concept |
-| **ENHANCED** | CRUD expansion, terms/sections/prerequisites/completions, shared registration service, server policy clock, schedule/window rules, waitlists, atomic drop/promotion, authentication/RBAC, ownership enforcement, token revocation, migrations, PostgreSQL support, transactional capacity protection, PostgreSQL concurrency testing, audit logging, rate limiting, OpenAPI/Swagger documentation, Prometheus metrics, containerization, expanded tests, and CI |
+| **ENHANCED** | CRUD expansion, terms/sections/prerequisites/completions, shared registration service, server policy clock, schedule/window rules, waitlists, atomic drop/promotion, authentication/RBAC, ownership enforcement, token revocation, production secret fail-fast validation, migrations, PostgreSQL support, transactional capacity protection, PostgreSQL concurrency testing, audit logging, rate limiting, OpenAPI/Swagger documentation, Prometheus metrics, containerization, expanded tests, and CI |
 | **UNVERIFIED** | Any exact historical source implementation, exact historical endpoint set, exact historical database engine, or exact richer behavior not supported by recovered artifacts |
 
 The public README should describe enhanced features as current portfolio functionality, not as recovered historical coursework.
