@@ -8,6 +8,7 @@ from .models import WaitlistEntry
 from .registration_service import (
     RegistrationError,
     cancel_waitlist as cancel_waitlist_entry,
+    install_registration_service,
     join_waitlist as join_waitlist_entry,
     policy_date,
 )
@@ -28,6 +29,7 @@ def _waitlist_json(entry: WaitlistEntry) -> dict:
 
 
 def init_waitlist(app) -> None:
+    install_registration_service(app)
     app.register_blueprint(bp)
 
 
