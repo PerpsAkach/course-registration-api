@@ -40,6 +40,8 @@ The following capabilities were subsequently built as new portfolio engineering 
 - prerequisite relationships
 - course-completion tracking
 - section-level registration
+- shared registration-policy/service layer for the enhanced runtime
+- server-controlled registration policy date
 - duplicate-course prevention within a term
 - schedule-conflict detection
 - section-level capacity enforcement
@@ -48,11 +50,15 @@ The following capabilities were subsequently built as new portfolio engineering 
 - section drop/reactivation
 - FIFO waitlists
 - automatic waitlist promotion
+- promotion-time revalidation of registration-window, prerequisite, duplicate-course and schedule-conflict rules
+- atomic drop + waitlist-promotion transaction coordination
+- rollback testing for failed promotion workflows
+- waitlist cancellation and policy-controlled rejoin
 - authentication and time-limited bearer tokens
 - account-wide bearer-token revocation
 - password change with prior-token invalidation
 - `student`, `registrar`, and `admin` RBAC
-- student ownership boundaries
+- secure-runtime student ownership tests for section registration and waitlists
 - structured request audit logging and request IDs
 - admin-only audit-event retrieval
 - configurable API rate limiting
@@ -65,6 +71,13 @@ The following capabilities were subsequently built as new portfolio engineering 
 - interactive Swagger UI
 - Docker/Gunicorn production runtime
 - local Docker Compose PostgreSQL deployment stack
+- architecture and implementation-status documentation
+
+## Compatibility boundary
+
+The reconstructed core application remains in `app/__init__.py`. The canonical enhanced runtime used by `run.py` is composed through `app.secure:create_app`, which installs the enhanced registration service for section-mutation and waitlist policy.
+
+This means modern service-layer behavior—such as server-controlled registration time and atomic drop/promotion—must be described as **enhanced runtime behavior**, not as recovered historical behavior.
 
 ## CURRENT IMPLEMENTATION STATUS
 
@@ -81,6 +94,6 @@ Unless stronger source artifacts are recovered, the following remain unverified 
 - exact original database engine
 - exact original schema columns and constraints
 - exact original authentication or authorization behavior
-- whether terms, sections, prerequisites, waitlists, schedule validation, migrations, PostgreSQL support, concurrency controls, audit logging, rate limiting, observability, or deployment tooling existed in the historical coursework
+- whether terms, sections, prerequisites, waitlists, schedule validation, service-layer registration policy, migrations, PostgreSQL support, concurrency controls, audit logging, rate limiting, observability, or deployment tooling existed in the historical coursework
 
 Portfolio descriptions should continue to distinguish historical evidence from modern reconstruction and enhancement.
