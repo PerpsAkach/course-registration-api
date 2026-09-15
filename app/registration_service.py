@@ -8,12 +8,19 @@ from flask import current_app
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import CourseCompletion, Prerequisite, Section, SectionEnrollment, Student
+from .models import (
+    CourseCompletion,
+    Prerequisite,
+    Section,
+    SectionEnrollment,
+    Student,
+    WaitlistEntry,
+)
 
 
 @dataclass(frozen=True)
 class RegistrationError(Exception):
-    """Domain error returned by the section-registration service."""
+    """Domain error returned by registration/waitlist services."""
 
     code: str
     status_code: int = 409
@@ -29,9 +36,9 @@ class RegistrationError(Exception):
 def policy_date() -> date:
     """Return the server-controlled registration policy date.
 
-    Tests may set ``REGISTRATION_POLICY_DATE`` to an ISO date or a callable
-    returning ``date``. Production requests never trust a client supplied
-    ``as_of`` value for registration-window decisions.
+    Tests may set ``REGISTRATION_POLICY_DATE`` to an ISO date, a ``date``, or a
+    callable returning ``date``. Production policy never trusts a client
+    supplied date for registration-window decisions.
     """
     override = current_app.config.get("REGISTRATION_POLICY_DATE")
     if callable(override):
@@ -102,7 +109,7 @@ def eligibility_error(
     check_window: bool = True,
     check_capacity: bool = False,
 ) -> RegistrationError | None:
-    """Evaluate shared registration rules without mutating state."""
+    """Evaluate shared registration policy without mutating state."""
     if check_window:
         term = section.term
         if as_of < term.registration_opens_on or as_of > term.registration_closes_on:
@@ -188,20 +195,150 @@ def register_for_section(
         enrollment = SectionEnrollment(student_id=student_id, section_id=section_id)
         session.add(enrollment)
 
-    # Flush here so transactional capacity protection fails inside the service
-    # boundary rather than after the route has built a success response.
     session.flush()
     return enrollment
 
 
-def drop_section(session: Session, *, enrollment_id: int) -> SectionEnrollment:
+def join_waitlist(
+    session: Session,
+    *,
+    student_id: int,
+    section_id: int,
+    as_of: date,
+) -> WaitlistEntry:
+    student = session.get(Student, student_id)
+    section = session.get(Section, section_id)
+    if student is None or section is None:
+        raise RegistrationError("student_or_section_not_found", status_code=404)
+
+    active = session.scalar(select(SectionEnrollment).where(
+        SectionEnrollment.student_id == student_id,
+        SectionEnrollment.section_id == section_id,
+        SectionEnrollment.status == "active",
+    ))
+    if active:
+        raise RegistrationError("already_enrolled")
+
+    error = eligibility_error(
+        session,
+        student_id,
+        section,
+        as_of=as_of,
+        check_window=True,
+        check_capacity=False,
+    )
+    if error:
+        raise error
+
+    existing = session.scalar(select(WaitlistEntry).where(
+        WaitlistEntry.student_id == student_id,
+        WaitlistEntry.section_id == section_id,
+    ))
+    if existing and existing.status == "waiting":
+        raise RegistrationError("already_waitlisted")
+
+    if active_section_count(session, section_id) < section.capacity:
+        raise RegistrationError("section_has_available_seats")
+
+    now = datetime.now(timezone.utc)
+    if existing:
+        existing.status = "waiting"
+        existing.joined_at = now
+        existing.promoted_at = None
+        existing.cancelled_at = None
+        entry = existing
+    else:
+        entry = WaitlistEntry(student_id=student_id, section_id=section_id)
+        session.add(entry)
+
+    session.flush()
+    return entry
+
+
+def cancel_waitlist(session: Session, *, entry_id: int) -> WaitlistEntry:
+    entry = session.get(WaitlistEntry, entry_id)
+    if entry is None:
+        raise RegistrationError("waitlist_entry_not_found", status_code=404)
+    if entry.status != "waiting":
+        raise RegistrationError("waitlist_entry_not_waiting")
+
+    entry.status = "cancelled"
+    entry.cancelled_at = datetime.now(timezone.utc)
+    session.flush()
+    return entry
+
+
+def promote_next_eligible(
+    session: Session,
+    *,
+    section_id: int,
+    as_of: date,
+) -> WaitlistEntry | None:
+    """Promote the first currently eligible waiting student.
+
+    Promotion re-evaluates the registration window, prerequisites, duplicate
+    course registration, and schedule conflicts at promotion time.
+    """
+    section = session.get(Section, section_id)
+    if section is None or active_section_count(session, section_id) >= section.capacity:
+        return None
+
+    entries = list(session.scalars(
+        select(WaitlistEntry)
+        .where(WaitlistEntry.section_id == section_id, WaitlistEntry.status == "waiting")
+        .order_by(WaitlistEntry.joined_at, WaitlistEntry.id)
+    ))
+    for entry in entries:
+        error = eligibility_error(
+            session,
+            entry.student_id,
+            section,
+            as_of=as_of,
+            check_window=True,
+            check_capacity=False,
+        )
+        if error:
+            continue
+
+        enrollment = session.scalar(select(SectionEnrollment).where(
+            SectionEnrollment.student_id == entry.student_id,
+            SectionEnrollment.section_id == section_id,
+        ))
+        now = datetime.now(timezone.utc)
+        if enrollment:
+            enrollment.status = "active"
+            enrollment.dropped_at = None
+            enrollment.enrolled_at = now
+        else:
+            session.add(SectionEnrollment(student_id=entry.student_id, section_id=section_id))
+
+        entry.status = "promoted"
+        entry.promoted_at = now
+        session.flush()
+        return entry
+
+    return None
+
+
+def drop_section_and_promote(
+    session: Session,
+    *,
+    enrollment_id: int,
+    as_of: date,
+) -> tuple[SectionEnrollment, WaitlistEntry | None]:
+    """Drop a section enrollment and promote a waiter in the same transaction."""
     enrollment = session.get(SectionEnrollment, enrollment_id)
     if enrollment is None:
         raise RegistrationError("section_enrollment_not_found", status_code=404)
     if enrollment.status == "dropped":
         raise RegistrationError("already_dropped")
 
+    section_id = enrollment.section_id
     enrollment.status = "dropped"
     enrollment.dropped_at = datetime.now(timezone.utc)
+
+    # No intermediate commit: the pending seat release and possible promotion
+    # are flushed/committed together by the route transaction.
+    promoted = promote_next_eligible(session, section_id=section_id, as_of=as_of)
     session.flush()
-    return enrollment
+    return enrollment, promoted
