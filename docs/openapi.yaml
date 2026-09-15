@@ -1,10 +1,14 @@
 openapi: 3.1.0
 info:
   title: Course Registration API
-  version: 1.0.0
+  version: 1.1.0
   description: |
-    Flask/SQLAlchemy course-registration backend with terms, sections,
-    prerequisites, section enrollment, waitlists, authentication and RBAC.
+    Flask/SQLAlchemy course-registration backend with academic terms, sections,
+    prerequisites, section enrollment, waitlists, authentication/RBAC,
+    PostgreSQL concurrency protection, auditing, rate limiting and metrics.
+
+    The canonical enhanced runtime is `app.secure:create_app`. Registration-window
+    policy is server controlled; clients do not supply the policy date.
 servers:
   - url: http://127.0.0.1:5000
 security:
@@ -18,12 +22,14 @@ tags:
   - name: Sections
   - name: Registration
   - name: Waitlists
+  - name: Operations
+
 paths:
   /api/health:
     get:
       tags: [Health]
       security: []
-      summary: Health check
+      summary: Application health check
       responses:
         '200':
           description: Application is healthy
@@ -33,6 +39,7 @@ paths:
                 type: object
                 properties:
                   status: {type: string, example: ok}
+
   /api/auth/bootstrap:
     post:
       tags: [Authentication]
@@ -42,36 +49,30 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/BootstrapRequest'
+            schema: {$ref: '#/components/schemas/BootstrapRequest'}
       responses:
         '201': {description: Administrator created}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/auth/login:
     post:
       tags: [Authentication]
       security: []
-      summary: Authenticate and receive a bearer token
+      summary: Authenticate and receive a signed bearer token
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
+            schema: {$ref: '#/components/schemas/LoginRequest'}
       responses:
         '200':
           description: Authentication successful
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  token: {type: string}
-                  token_type: {type: string, example: Bearer}
-                  expires_in: {type: integer, example: 28800}
-                  user: {$ref: '#/components/schemas/UserAccount'}
+              schema: {$ref: '#/components/schemas/LoginResponse'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+
   /api/auth/me:
     get:
       tags: [Authentication]
@@ -83,13 +84,38 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/UserAccount'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/auth/logout-all:
+    post:
+      tags: [Authentication]
+      summary: Revoke all previously issued bearer tokens for the current account
+      responses:
+        '200':
+          description: Account token version incremented
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /api/auth/password:
+    post:
+      tags: [Authentication]
+      summary: Change the current account password and revoke prior tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PasswordChangeRequest'}
+      responses:
+        '200': {description: Password changed and prior tokens revoked}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
   /api/auth/users:
     get:
       tags: [Authentication]
       summary: List user accounts
       description: Admin only.
       responses:
-        '200': {description: Account collection}
+        '200': {description: User collection}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
     post:
@@ -108,9 +134,9 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/UserAccount'}
         '400': {$ref: '#/components/responses/BadRequest'}
-        '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/students:
     get:
       tags: [Students]
@@ -123,19 +149,17 @@ paths:
         '200': {description: Student collection}
     post:
       tags: [Students]
-      summary: Create a student
+      summary: Create a student record
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/StudentCreate'}
       responses:
-        '201':
-          description: Student created
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Student'}
+        '201': {description: Student created}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/students/{student_id}:
     parameters:
       - {$ref: '#/components/parameters/StudentId'}
@@ -143,24 +167,14 @@ paths:
       tags: [Students]
       summary: Fetch one student
       responses:
-        '200':
-          description: Student
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Student'}
+        '200': {description: Student record}
         '404': {$ref: '#/components/responses/NotFound'}
     patch:
       tags: [Students]
       summary: Update one student
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/StudentUpdate'}
       responses:
         '200': {description: Updated student}
         '400': {$ref: '#/components/responses/BadRequest'}
-        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
     delete:
       tags: [Students]
@@ -168,24 +182,27 @@ paths:
       responses:
         '204': {description: Student deleted}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/students/{student_id}/courses:
     get:
       tags: [Students]
-      summary: List active course-level enrollments for a student
+      summary: List active legacy course-level enrollments for a student
       parameters:
         - {$ref: '#/components/parameters/StudentId'}
       responses:
-        '200': {description: Courses}
+        '200': {description: Course collection}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/students/{student_id}/completions:
     get:
       tags: [Students]
-      summary: List completed courses for a student
+      summary: List recorded course completions for a student
       parameters:
         - {$ref: '#/components/parameters/StudentId'}
       responses:
-        '200': {description: Completion records}
+        '200': {description: Completion collection}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/courses:
     get:
       tags: [Courses]
@@ -205,13 +222,10 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CourseCreate'}
       responses:
-        '201':
-          description: Course created
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Course'}
+        '201': {description: Course created}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/courses/{course_id}:
     parameters:
       - {$ref: '#/components/parameters/CourseId'}
@@ -219,7 +233,7 @@ paths:
       tags: [Courses]
       summary: Fetch one course
       responses:
-        '200': {description: Course}
+        '200': {description: Course record}
         '404': {$ref: '#/components/responses/NotFound'}
     patch:
       tags: [Courses]
@@ -227,7 +241,6 @@ paths:
       responses:
         '200': {description: Updated course}
         '400': {$ref: '#/components/responses/BadRequest'}
-        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
     delete:
       tags: [Courses]
@@ -235,15 +248,16 @@ paths:
       responses:
         '204': {description: Course deleted}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/courses/{course_id}/students:
     get:
       tags: [Courses]
-      summary: List active course-level students
+      summary: List active legacy course-level students
       parameters:
         - {$ref: '#/components/parameters/CourseId'}
       responses:
-        '200': {description: Students}
-        '404': {$ref: '#/components/responses/NotFound'}
+        '200': {description: Student collection}
+
   /api/courses/{course_id}/prerequisites:
     get:
       tags: [Courses]
@@ -251,11 +265,10 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/CourseId'}
       responses:
-        '200': {description: Prerequisites}
-        '404': {$ref: '#/components/responses/NotFound'}
+        '200': {description: Prerequisite collection}
     post:
       tags: [Courses]
-      summary: Add a prerequisite
+      summary: Add a prerequisite relationship
       parameters:
         - {$ref: '#/components/parameters/CourseId'}
       requestBody:
@@ -270,14 +283,14 @@ paths:
       responses:
         '201': {description: Prerequisite created}
         '400': {$ref: '#/components/responses/BadRequest'}
-        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/terms:
     get:
       tags: [Terms]
       summary: List academic terms
       responses:
-        '200': {description: Terms}
+        '200': {description: Term collection}
     post:
       tags: [Terms]
       summary: Create an academic term
@@ -290,6 +303,7 @@ paths:
         '201': {description: Term created}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/sections:
     get:
       tags: [Sections]
@@ -302,7 +316,7 @@ paths:
           name: term_id
           schema: {type: integer}
       responses:
-        '200': {description: Sections}
+        '200': {description: Section collection}
     post:
       tags: [Sections]
       summary: Create a course section
@@ -316,6 +330,7 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/sections/{section_id}:
     get:
       tags: [Sections]
@@ -323,12 +338,13 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/SectionId'}
       responses:
-        '200': {description: Section}
+        '200': {description: Section record}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/completions:
     post:
       tags: [Registration]
-      summary: Create or update a course-completion record
+      summary: Create or update course-completion evidence
       requestBody:
         required: true
         content:
@@ -339,6 +355,7 @@ paths:
         '201': {description: Completion recorded}
         '400': {$ref: '#/components/responses/BadRequest'}
         '404': {$ref: '#/components/responses/NotFound'}
+
   /api/section-enrollments:
     get:
       tags: [Registration]
@@ -354,14 +371,16 @@ paths:
           name: status
           schema: {type: string, enum: [active, dropped]}
       responses:
-        '200': {description: Section enrollments}
+        '200': {description: Section-enrollment collection}
+        '403': {$ref: '#/components/responses/Forbidden'}
     post:
       tags: [Registration]
       summary: Register a student into a section
       description: |
-        Enforces the registration window, prerequisites, duplicate-course rules,
-        schedule conflicts and section capacity. PostgreSQL deployments use a
-        transactional row lock around final-seat allocation.
+        The enhanced secure runtime evaluates the server-controlled registration
+        policy date, prerequisites, same-course/same-term rule, schedule conflicts
+        and section capacity. PostgreSQL final-seat allocation is protected by a
+        transaction-level row lock and recount.
       requestBody:
         required: true
         content:
@@ -374,21 +393,28 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/SectionEnrollment'}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/section-enrollments/{enrollment_id}:
     delete:
       tags: [Registration]
-      summary: Drop a section enrollment
+      summary: Drop a section enrollment and atomically evaluate waitlist promotion
       parameters:
         - in: path
           name: enrollment_id
           required: true
           schema: {type: integer}
       responses:
-        '200': {description: Enrollment dropped}
+        '200':
+          description: |
+            Enrollment dropped. If a waiter was promoted in the same transaction,
+            the response also includes promoted_waitlist_entry_id and promoted_student_id.
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/waitlists:
     get:
       tags: [Waitlists]
@@ -404,20 +430,26 @@ paths:
           name: status
           schema: {type: string, enum: [waiting, promoted, cancelled]}
       responses:
-        '200': {description: Waitlist entries}
+        '200': {description: Waitlist collection}
+        '403': {$ref: '#/components/responses/Forbidden'}
     post:
       tags: [Waitlists]
       summary: Join a full section waitlist
+      description: |
+        Admission uses the server-controlled policy date and shared registration
+        rules. The target section must currently be full.
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/WaitlistRequest'}
       responses:
-        '201': {description: Waitlist entry created}
+        '201': {description: Waitlist entry created or rejoined}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
   /api/waitlists/{entry_id}:
     delete:
       tags: [Waitlists]
@@ -429,13 +461,41 @@ paths:
           schema: {type: integer}
       responses:
         '200': {description: Waitlist entry cancelled}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+
+  /api/audit-events:
+    get:
+      tags: [Operations]
+      summary: List recent structured audit events
+      description: Admin only.
+      parameters:
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        '200': {description: Audit-event collection}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /metrics:
+    get:
+      tags: [Operations]
+      security: []
+      summary: Prometheus-compatible application metrics
+      responses:
+        '200':
+          description: Prometheus exposition text
+          content:
+            text/plain:
+              schema: {type: string}
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+
   parameters:
     Search:
       in: query
@@ -464,6 +524,7 @@ components:
       name: section_id
       required: true
       schema: {type: integer}
+
   responses:
     BadRequest:
       description: Invalid request
@@ -486,16 +547,18 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
     Conflict:
-      description: Domain or state conflict
+      description: Domain conflict
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
+
   schemas:
     Error:
       type: object
       required: [error]
       properties:
         error: {type: string}
+
     BootstrapRequest:
       type: object
       required: [username, email, password]
@@ -503,6 +566,7 @@ components:
         username: {type: string}
         email: {type: string, format: email}
         password: {type: string, minLength: 10}
+
     LoginRequest:
       type: object
       required: [password]
@@ -510,6 +574,22 @@ components:
         username: {type: string}
         email: {type: string, format: email}
         password: {type: string}
+
+    LoginResponse:
+      type: object
+      properties:
+        token: {type: string}
+        token_type: {type: string, example: Bearer}
+        expires_in: {type: integer, example: 28800}
+        user: {$ref: '#/components/schemas/UserAccount'}
+
+    PasswordChangeRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: {type: string}
+        new_password: {type: string, minLength: 10}
+
     UserAccount:
       type: object
       properties:
@@ -520,6 +600,7 @@ components:
         student_id: {type: [integer, 'null']}
         is_active: {type: boolean}
         created_at: {type: string, format: date-time}
+
     CreateUserRequest:
       type: object
       required: [username, email, password, role]
@@ -529,14 +610,7 @@ components:
         password: {type: string, minLength: 10}
         role: {type: string, enum: [student, registrar, admin]}
         student_id: {type: integer}
-    Student:
-      type: object
-      properties:
-        id: {type: integer}
-        student_number: {type: string}
-        first_name: {type: string}
-        last_name: {type: string}
-        email: {type: string, format: email}
+
     StudentCreate:
       type: object
       required: [student_number, first_name, last_name, email]
@@ -545,22 +619,7 @@ components:
         first_name: {type: string}
         last_name: {type: string}
         email: {type: string, format: email}
-    StudentUpdate:
-      type: object
-      properties:
-        student_number: {type: string}
-        first_name: {type: string}
-        last_name: {type: string}
-        email: {type: string, format: email}
-    Course:
-      type: object
-      properties:
-        id: {type: integer}
-        code: {type: string}
-        title: {type: string}
-        description: {type: [string, 'null']}
-        credits: {type: integer, minimum: 1}
-        capacity: {type: integer, minimum: 1}
+
     CourseCreate:
       type: object
       required: [code, title]
@@ -570,6 +629,7 @@ components:
         description: {type: string}
         credits: {type: integer, minimum: 1, default: 3}
         capacity: {type: integer, minimum: 1, default: 30}
+
     TermCreate:
       type: object
       required: [name, year, starts_on, ends_on, registration_opens_on, registration_closes_on]
@@ -580,6 +640,7 @@ components:
         ends_on: {type: string, format: date}
         registration_opens_on: {type: string, format: date}
         registration_closes_on: {type: string, format: date}
+
     SectionCreate:
       type: object
       required: [course_id, term_id, section_number]
@@ -593,6 +654,7 @@ components:
         starts_at: {type: string, example: '09:00'}
         ends_at: {type: string, example: '10:15'}
         location: {type: string}
+
     CompletionRequest:
       type: object
       required: [student_id, course_id]
@@ -601,13 +663,15 @@ components:
         course_id: {type: integer}
         completed_on: {type: string, format: date}
         grade: {type: string}
+
     SectionEnrollmentRequest:
       type: object
       required: [student_id, section_id]
+      additionalProperties: false
       properties:
         student_id: {type: integer}
         section_id: {type: integer}
-        as_of: {type: string, format: date}
+
     SectionEnrollment:
       type: object
       properties:
@@ -617,10 +681,13 @@ components:
         status: {type: string, enum: [active, dropped]}
         enrolled_at: {type: string, format: date-time}
         dropped_at: {type: [string, 'null'], format: date-time}
+        promoted_waitlist_entry_id: {type: integer}
+        promoted_student_id: {type: integer}
+
     WaitlistRequest:
       type: object
       required: [student_id, section_id]
+      additionalProperties: false
       properties:
         student_id: {type: integer}
         section_id: {type: integer}
-        as_of: {type: string, format: date}
